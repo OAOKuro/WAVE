@@ -1,0 +1,19 @@
+# Ignore virtual environment (21,000+ library files)
+venv/
+.venv/
+
+# Ignore dataset images and raw unzipped folders
+data/
+hagrid_dataset/
+*.jpg
+*.png
+*.zip
+
+# Ignore trained models/weights
+models/
+*.pkl
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+.vscode/

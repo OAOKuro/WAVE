@@ -1,0 +1,21 @@
+{
+    "recognition_enabled": true,
+    "lighting_sensitivity": 0.6,
+    "frame_skip": 2,
+    "enable_zoom_optional": true,
+    "enable_roi_optional": false,
+    "enable_auto_lighting_optional": false,
+    "roi_settings": {
+        "x_min": 0.15,
+        "y_min": 0.15,
+        "x_max": 0.85,
+        "y_max": 0.85
+    },
+    "gesture_mappings": {
+        "Left Swipe": "left",
+        "Right Swipe": "right",
+        "Pinch": "ctrl+-",
+        "Reverse Pinch": "ctrl++"
+    },
+    "active_tab": "mapping"
+}
