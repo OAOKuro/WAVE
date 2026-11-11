@@ -1,21 +1,34 @@
 {
     "recognition_enabled": true,
-    "lighting_sensitivity": 0.6,
+    "min_detection_confidence": 0.7,
+    "min_tracking_confidence": 0.7,
     "frame_skip": 2,
+    "swipe_cooldown": 0.5,
     "enable_zoom_optional": true,
     "enable_roi_optional": false,
+    "active_tab": "live",
+    "gesture_mappings": {
+        "Left Swipe": "left",
+        "Right Swipe": "right",
+        "Pinch": "ctrl+-",
+        "Reverse Pinch": "ctrl++",
+        "Open Palm": "Key B",
+        "Pinch In / Out": "Ctrl + / -",
+        "Index Finger Point": "Key L"
+    },
+    "gesture_states": {
+        "Right Swipe": true,
+        "Left Swipe": true,
+        "Open Palm": true,
+        "Pinch In / Out": true,
+        "Index Finger Point": true
+    },
+    "lighting_sensitivity": 0.6,
     "enable_auto_lighting_optional": false,
     "roi_settings": {
         "x_min": 0.15,
         "y_min": 0.15,
         "x_max": 0.85,
         "y_max": 0.85
-    },
-    "gesture_mappings": {
-        "Left Swipe": "left",
-        "Right Swipe": "right",
-        "Pinch": "ctrl+-",
-        "Reverse Pinch": "ctrl++"
-    },
-    "active_tab": "mapping"
+    }
 }

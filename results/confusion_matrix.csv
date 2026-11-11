@@ -1,0 +1,5 @@
+Actual \ Predicted,Left Swipe,Right Swipe,Pinch In,Pinch Out
+Left Swipe,200,0,0,0
+Right Swipe,0,200,0,0
+Pinch In,3,0,196,1
+Pinch Out,0,0,0,200

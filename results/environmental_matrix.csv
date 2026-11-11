@@ -1,0 +1,13 @@
+Camera Distance,Lighting Condition,Uncompensated Baseline Accuracy (%),WAVE Enhanced Accuracy (%),Improvement (+%)
+100cm (1m),Bright (Good),98.96,99.38,0.42
+100cm (1m),Medium,95.42,99.17,3.75
+100cm (1m),Low (Dim),86.46,99.17,12.71
+200cm (2m),Bright (Good),81.04,98.96,17.92
+200cm (2m),Medium,80.83,98.54,17.71
+200cm (2m),Low (Dim),78.96,94.38,15.42
+300cm (3m),Bright (Good),79.79,94.79,15.0
+300cm (3m),Medium,80.21,93.33,13.12
+300cm (3m),Low (Dim),75.42,91.46,16.04
+450cm (4.5m),Bright (Good),74.58,86.04,11.46
+450cm (4.5m),Medium,72.5,85.21,12.71
+450cm (4.5m),Low (Dim),58.96,83.54,24.58

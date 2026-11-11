@@ -1,0 +1,171 @@
+{
+    "timestamp": "2026-11-11 03:33:54",
+    "classification_metrics": {
+        "total_samples": 800,
+        "correct_predictions": 796,
+        "overall_accuracy": 0.995,
+        "overall_accuracy_pct": 99.5,
+        "macro_precision": 0.9951,
+        "macro_recall": 0.995,
+        "macro_f1_score": 0.995,
+        "macro_precision_pct": 99.51,
+        "macro_recall_pct": 99.5,
+        "macro_f1_pct": 99.5,
+        "per_class": [
+            {
+                "Gesture Class": "Left Swipe",
+                "Support": 200,
+                "TP": 200,
+                "FP": 3,
+                "FN": 0,
+                "TN": 597,
+                "Class Accuracy (%)": 99.62,
+                "Precision": 0.9852,
+                "Recall": 1.0,
+                "F1-Score": 0.9926,
+                "Precision (%)": 98.52,
+                "Recall (%)": 100.0,
+                "F1-Score (%)": 99.26
+            },
+            {
+                "Gesture Class": "Right Swipe",
+                "Support": 200,
+                "TP": 200,
+                "FP": 0,
+                "FN": 0,
+                "TN": 600,
+                "Class Accuracy (%)": 100.0,
+                "Precision": 1.0,
+                "Recall": 1.0,
+                "F1-Score": 1.0,
+                "Precision (%)": 100.0,
+                "Recall (%)": 100.0,
+                "F1-Score (%)": 100.0
+            },
+            {
+                "Gesture Class": "Pinch In",
+                "Support": 200,
+                "TP": 196,
+                "FP": 0,
+                "FN": 4,
+                "TN": 600,
+                "Class Accuracy (%)": 99.5,
+                "Precision": 1.0,
+                "Recall": 0.98,
+                "F1-Score": 0.9899,
+                "Precision (%)": 100.0,
+                "Recall (%)": 98.0,
+                "F1-Score (%)": 98.99
+            },
+            {
+                "Gesture Class": "Pinch Out",
+                "Support": 200,
+                "TP": 200,
+                "FP": 1,
+                "FN": 0,
+                "TN": 599,
+                "Class Accuracy (%)": 99.88,
+                "Precision": 0.995,
+                "Recall": 1.0,
+                "F1-Score": 0.9975,
+                "Precision (%)": 99.5,
+                "Recall (%)": 100.0,
+                "F1-Score (%)": 99.75
+            }
+        ]
+    },
+    "environmental_benchmark": [
+        {
+            "Camera Distance": "100cm (1m)",
+            "Lighting Condition": "Bright (Good)",
+            "Uncompensated Baseline Accuracy (%)": 98.96,
+            "WAVE Enhanced Accuracy (%)": 99.38,
+            "Improvement (+%)": 0.42
+        },
+        {
+            "Camera Distance": "100cm (1m)",
+            "Lighting Condition": "Medium",
+            "Uncompensated Baseline Accuracy (%)": 95.42,
+            "WAVE Enhanced Accuracy (%)": 99.17,
+            "Improvement (+%)": 3.75
+        },
+        {
+            "Camera Distance": "100cm (1m)",
+            "Lighting Condition": "Low (Dim)",
+            "Uncompensated Baseline Accuracy (%)": 86.46,
+            "WAVE Enhanced Accuracy (%)": 99.17,
+            "Improvement (+%)": 12.71
+        },
+        {
+            "Camera Distance": "200cm (2m)",
+            "Lighting Condition": "Bright (Good)",
+            "Uncompensated Baseline Accuracy (%)": 81.04,
+            "WAVE Enhanced Accuracy (%)": 98.96,
+            "Improvement (+%)": 17.92
+        },
+        {
+            "Camera Distance": "200cm (2m)",
+            "Lighting Condition": "Medium",
+            "Uncompensated Baseline Accuracy (%)": 80.83,
+            "WAVE Enhanced Accuracy (%)": 98.54,
+            "Improvement (+%)": 17.71
+        },
+        {
+            "Camera Distance": "200cm (2m)",
+            "Lighting Condition": "Low (Dim)",
+            "Uncompensated Baseline Accuracy (%)": 78.96,
+            "WAVE Enhanced Accuracy (%)": 94.38,
+            "Improvement (+%)": 15.42
+        },
+        {
+            "Camera Distance": "300cm (3m)",
+            "Lighting Condition": "Bright (Good)",
+            "Uncompensated Baseline Accuracy (%)": 79.79,
+            "WAVE Enhanced Accuracy (%)": 94.79,
+            "Improvement (+%)": 15.0
+        },
+        {
+            "Camera Distance": "300cm (3m)",
+            "Lighting Condition": "Medium",
+            "Uncompensated Baseline Accuracy (%)": 80.21,
+            "WAVE Enhanced Accuracy (%)": 93.33,
+            "Improvement (+%)": 13.12
+        },
+        {
+            "Camera Distance": "300cm (3m)",
+            "Lighting Condition": "Low (Dim)",
+            "Uncompensated Baseline Accuracy (%)": 75.42,
+            "WAVE Enhanced Accuracy (%)": 91.46,
+            "Improvement (+%)": 16.04
+        },
+        {
+            "Camera Distance": "450cm (4.5m)",
+            "Lighting Condition": "Bright (Good)",
+            "Uncompensated Baseline Accuracy (%)": 74.58,
+            "WAVE Enhanced Accuracy (%)": 86.04,
+            "Improvement (+%)": 11.46
+        },
+        {
+            "Camera Distance": "450cm (4.5m)",
+            "Lighting Condition": "Medium",
+            "Uncompensated Baseline Accuracy (%)": 72.5,
+            "WAVE Enhanced Accuracy (%)": 85.21,
+            "Improvement (+%)": 12.71
+        },
+        {
+            "Camera Distance": "450cm (4.5m)",
+            "Lighting Condition": "Low (Dim)",
+            "Uncompensated Baseline Accuracy (%)": 58.96,
+            "WAVE Enhanced Accuracy (%)": 83.54,
+            "Improvement (+%)": 24.58
+        }
+    ],
+    "latency_benchmark": {
+        "mean_inference_latency_ms": 0.0921,
+        "median_inference_latency_ms": 0.0887,
+        "p95_inference_latency_ms": 0.1232,
+        "min_inference_latency_ms": 0.0713,
+        "max_inference_latency_ms": 0.9771,
+        "classifier_throughput_fps": 10859.9
+    }
+}
