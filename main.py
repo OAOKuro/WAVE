@@ -724,6 +724,13 @@ class WaveDesktopApp:
         self.tab_map_btn.pack(side="left")
         self.tab_map_btn.bind("<Button-1>", lambda e: self.switch_tab("mapping"))
 
+        self.tab_calib_btn = tk.Label(
+            tab_outer, text="Calibration", font=("Segoe UI", 9, "bold"),
+            padx=14, pady=5, cursor="hand2"
+            )
+        self.tab_calib_btn.pack(side="left")
+        self.tab_calib_btn.bind("<Button-1>", lambda e: self.switch_tab("calibration"))
+
         right_frame = tk.Frame(self.navbar, bg=self.BG_CARD)
         right_frame.pack(side="right", padx=24, pady=12)
 
@@ -759,9 +766,11 @@ class WaveDesktopApp:
 
         self.live_view = tk.Frame(self.content_container, bg=self.BG_MAIN)
         self.mapping_view = tk.Frame(self.content_container, bg=self.BG_MAIN)
+        self.calibration_view = tk.Frame(self.content_container, bg=self.BG_MAIN)
 
         self._build_live_presentation_view()
         self._build_keyboard_mapping_view()
+        self._build_calibration_view()
 
     def _build_live_presentation_view(self):
         wrapper = tk.Frame(self.live_view, bg=self.BG_MAIN)
@@ -1093,16 +1102,26 @@ class WaveDesktopApp:
         self.config["active_tab"] = tab_name
         self.ipc_config.save(self.config)
 
+        self.live_view.pack_forget()
+        self.mapping_view.pack_forget()
+        if hasattr(self, 'calibration_view'):
+            self.calibration_view.pack_forget()
+
         if tab_name == "live":
-            self.mapping_view.pack_forget()
             self.live_view.pack(fill="both", expand=True)
             self.tab_live_btn.configure(bg=self.BG_CARD, fg=self.SLATE_900)
             self.tab_map_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
-        else:
-            self.live_view.pack_forget()
+            self.tab_calib_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+        elif tab_name == "mapping":
             self.mapping_view.pack(fill="both", expand=True)
             self.tab_map_btn.configure(bg=self.BG_CARD, fg=self.BLUE_PRIMARY)
             self.tab_live_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+            self.tab_calib_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+        elif tab_name == "calibration":
+            self.calibration_view.pack(fill="both", expand=True)
+            self.tab_calib_btn.configure(bg=self.BG_CARD, fg=self.BLUE_PRIMARY)
+            self.tab_live_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+            self.tab_map_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
 
     def toggle_engine(self):
         new_state = not self.config.get("recognition_enabled", True)
@@ -1204,9 +1223,33 @@ class WaveDesktopApp:
         self._sync_engine_ui(recognition_on)
 
         ret, frame = self.cap.read()
+
+
+        if not ret:
+            self.pill_cam_dot.configure(fg="#EF4444")
+            self.pill_cam_txt.configure(text=" DISCONNECTED")
+            self._show_camera_error_popup()
+            self.root.after(2000, self.update_loop)
+            return
+
         if ret:
             frame = cv2.flip(frame, 1)
-            self.frame_count += 1
+            lighting_sens = float(self.config.get("lighting_sensitivity", 0.6))
+            if lighting_sens != 0.6: #it is only adjusted if user changed from default
+                brightness_factor = 0.5 + (lighting_sens * 1.0)
+                frame = cv2.convertScaleAbs(frame, alpha=brightness_factor, beta=0)
+            # YOUR CODE: Apply ROI cropping
+            if self.config.get("enable_roi_optional", False):
+                roi = self.config.get("roi_settings", {})
+                h, w = frame.shape[:2]
+                x_min = int(roi.get("x_min", 0.15) * w)
+                y_min = int(roi.get("y_min", 0.15) * h)
+                x_max = int(roi.get("x_max", 0.85) * w)
+                y_max = int(roi.get("y_max", 0.85) * h)
+                frame = frame[y_min:y_max, x_min:x_max]
+                # Draw ROI rectangle for visual feedback
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                self.frame_count += 1
             swipe_cooldown = float(self.config.get("swipe_cooldown", 0.6))
 
             frame_skip = max(2, int(self.config.get("frame_skip", 2)))
