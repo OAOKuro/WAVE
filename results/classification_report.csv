@@ -1,0 +1,5 @@
+Gesture Class,Support,TP,FP,FN,TN,Class Accuracy (%),Precision,Recall,F1-Score,Precision (%),Recall (%),F1-Score (%)
+Left Swipe,200,200,3,0,597,99.62,0.9852,1.0,0.9926,98.52,100.0,99.26
+Right Swipe,200,200,0,0,600,100.0,1.0,1.0,1.0,100.0,100.0,100.0
+Pinch In,200,196,0,4,600,99.5,1.0,0.98,0.9899,100.0,98.0,98.99
+Pinch Out,200,200,1,0,599,99.88,0.995,1.0,0.9975,99.5,100.0,99.75
