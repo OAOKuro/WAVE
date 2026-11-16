@@ -1,76 +1,91 @@
 {
-    "timestamp": "2026-11-11 03:33:54",
+    "timestamp": "2026-11-16 00:26:49",
     "classification_metrics": {
-        "total_samples": 800,
-        "correct_predictions": 796,
-        "overall_accuracy": 0.995,
-        "overall_accuracy_pct": 99.5,
-        "macro_precision": 0.9951,
-        "macro_recall": 0.995,
-        "macro_f1_score": 0.995,
-        "macro_precision_pct": 99.51,
-        "macro_recall_pct": 99.5,
-        "macro_f1_pct": 99.5,
+        "total_samples": 300,
+        "correct_predictions": 289,
+        "overall_accuracy": 0.9633,
+        "overall_accuracy_pct": 96.33,
+        "macro_precision": 0.964,
+        "macro_recall": 0.9633,
+        "macro_f1_score": 0.9637,
+        "macro_precision_pct": 96.4,
+        "macro_recall_pct": 96.33,
+        "macro_f1_pct": 96.37,
         "per_class": [
             {
                 "Gesture Class": "Left Swipe",
-                "Support": 200,
-                "TP": 200,
-                "FP": 3,
-                "FN": 0,
-                "TN": 597,
-                "Class Accuracy (%)": 99.62,
-                "Precision": 0.9852,
-                "Recall": 1.0,
-                "F1-Score": 0.9926,
-                "Precision (%)": 98.52,
-                "Recall (%)": 100.0,
-                "F1-Score (%)": 99.26
+                "Support": 60,
+                "TP": 57,
+                "FP": 1,
+                "FN": 3,
+                "TN": 239,
+                "Class Accuracy (%)": 98.67,
+                "Precision": 0.9828,
+                "Recall": 0.95,
+                "F1-Score": 0.9661,
+                "Precision (%)": 98.28,
+                "Recall (%)": 95.0,
+                "F1-Score (%)": 96.61
             },
             {
                 "Gesture Class": "Right Swipe",
-                "Support": 200,
-                "TP": 200,
+                "Support": 60,
+                "TP": 58,
                 "FP": 0,
-                "FN": 0,
-                "TN": 600,
-                "Class Accuracy (%)": 100.0,
+                "FN": 2,
+                "TN": 240,
+                "Class Accuracy (%)": 99.33,
                 "Precision": 1.0,
-                "Recall": 1.0,
-                "F1-Score": 1.0,
+                "Recall": 0.9667,
+                "F1-Score": 0.9831,
                 "Precision (%)": 100.0,
-                "Recall (%)": 100.0,
-                "F1-Score (%)": 100.0
+                "Recall (%)": 96.67,
+                "F1-Score (%)": 98.31
             },
             {
-                "Gesture Class": "Pinch In",
-                "Support": 200,
-                "TP": 196,
-                "FP": 0,
+                "Gesture Class": "Open Palm",
+                "Support": 60,
+                "TP": 56,
+                "FP": 3,
                 "FN": 4,
-                "TN": 600,
-                "Class Accuracy (%)": 99.5,
-                "Precision": 1.0,
-                "Recall": 0.98,
-                "F1-Score": 0.9899,
-                "Precision (%)": 100.0,
-                "Recall (%)": 98.0,
-                "F1-Score (%)": 98.99
+                "TN": 237,
+                "Class Accuracy (%)": 97.67,
+                "Precision": 0.9492,
+                "Recall": 0.9333,
+                "F1-Score": 0.9412,
+                "Precision (%)": 94.92,
+                "Recall (%)": 93.33,
+                "F1-Score (%)": 94.12
             },
             {
-                "Gesture Class": "Pinch Out",
-                "Support": 200,
-                "TP": 200,
-                "FP": 1,
+                "Gesture Class": "Pinch In / Out",
+                "Support": 60,
+                "TP": 58,
+                "FP": 3,
+                "FN": 2,
+                "TN": 237,
+                "Class Accuracy (%)": 98.33,
+                "Precision": 0.9508,
+                "Recall": 0.9667,
+                "F1-Score": 0.9587,
+                "Precision (%)": 95.08,
+                "Recall (%)": 96.67,
+                "F1-Score (%)": 95.87
+            },
+            {
+                "Gesture Class": "Index Finger Point",
+                "Support": 60,
+                "TP": 60,
+                "FP": 4,
                 "FN": 0,
-                "TN": 599,
-                "Class Accuracy (%)": 99.88,
-                "Precision": 0.995,
+                "TN": 236,
+                "Class Accuracy (%)": 98.67,
+                "Precision": 0.9375,
                 "Recall": 1.0,
-                "F1-Score": 0.9975,
-                "Precision (%)": 99.5,
+                "F1-Score": 0.9677,
+                "Precision (%)": 93.75,
                 "Recall (%)": 100.0,
-                "F1-Score (%)": 99.75
+                "F1-Score (%)": 96.77
             }
         ]
     },
@@ -78,94 +93,94 @@
         {
             "Camera Distance": "100cm (1m)",
             "Lighting Condition": "Bright (Good)",
-            "Uncompensated Baseline Accuracy (%)": 98.96,
-            "WAVE Enhanced Accuracy (%)": 99.38,
-            "Improvement (+%)": 0.42
+            "Uncompensated Baseline Accuracy (%)": 96.0,
+            "WAVE Enhanced Accuracy (%)": 96.33,
+            "Improvement (+%)": 0.33
         },
         {
             "Camera Distance": "100cm (1m)",
             "Lighting Condition": "Medium",
-            "Uncompensated Baseline Accuracy (%)": 95.42,
-            "WAVE Enhanced Accuracy (%)": 99.17,
-            "Improvement (+%)": 3.75
+            "Uncompensated Baseline Accuracy (%)": 95.0,
+            "WAVE Enhanced Accuracy (%)": 96.0,
+            "Improvement (+%)": 1.0
         },
         {
             "Camera Distance": "100cm (1m)",
             "Lighting Condition": "Low (Dim)",
-            "Uncompensated Baseline Accuracy (%)": 86.46,
-            "WAVE Enhanced Accuracy (%)": 99.17,
-            "Improvement (+%)": 12.71
+            "Uncompensated Baseline Accuracy (%)": 92.67,
+            "WAVE Enhanced Accuracy (%)": 95.67,
+            "Improvement (+%)": 3.0
         },
         {
             "Camera Distance": "200cm (2m)",
             "Lighting Condition": "Bright (Good)",
-            "Uncompensated Baseline Accuracy (%)": 81.04,
-            "WAVE Enhanced Accuracy (%)": 98.96,
-            "Improvement (+%)": 17.92
+            "Uncompensated Baseline Accuracy (%)": 84.0,
+            "WAVE Enhanced Accuracy (%)": 96.0,
+            "Improvement (+%)": 12.0
         },
         {
             "Camera Distance": "200cm (2m)",
             "Lighting Condition": "Medium",
-            "Uncompensated Baseline Accuracy (%)": 80.83,
-            "WAVE Enhanced Accuracy (%)": 98.54,
-            "Improvement (+%)": 17.71
+            "Uncompensated Baseline Accuracy (%)": 78.33,
+            "WAVE Enhanced Accuracy (%)": 96.33,
+            "Improvement (+%)": 18.0
         },
         {
             "Camera Distance": "200cm (2m)",
             "Lighting Condition": "Low (Dim)",
-            "Uncompensated Baseline Accuracy (%)": 78.96,
-            "WAVE Enhanced Accuracy (%)": 94.38,
-            "Improvement (+%)": 15.42
+            "Uncompensated Baseline Accuracy (%)": 68.0,
+            "WAVE Enhanced Accuracy (%)": 95.33,
+            "Improvement (+%)": 27.33
         },
         {
             "Camera Distance": "300cm (3m)",
             "Lighting Condition": "Bright (Good)",
-            "Uncompensated Baseline Accuracy (%)": 79.79,
-            "WAVE Enhanced Accuracy (%)": 94.79,
-            "Improvement (+%)": 15.0
+            "Uncompensated Baseline Accuracy (%)": 64.67,
+            "WAVE Enhanced Accuracy (%)": 95.0,
+            "Improvement (+%)": 30.33
         },
         {
             "Camera Distance": "300cm (3m)",
             "Lighting Condition": "Medium",
-            "Uncompensated Baseline Accuracy (%)": 80.21,
-            "WAVE Enhanced Accuracy (%)": 93.33,
-            "Improvement (+%)": 13.12
+            "Uncompensated Baseline Accuracy (%)": 59.67,
+            "WAVE Enhanced Accuracy (%)": 95.33,
+            "Improvement (+%)": 35.67
         },
         {
             "Camera Distance": "300cm (3m)",
             "Lighting Condition": "Low (Dim)",
-            "Uncompensated Baseline Accuracy (%)": 75.42,
-            "WAVE Enhanced Accuracy (%)": 91.46,
-            "Improvement (+%)": 16.04
+            "Uncompensated Baseline Accuracy (%)": 58.0,
+            "WAVE Enhanced Accuracy (%)": 94.33,
+            "Improvement (+%)": 36.33
         },
         {
             "Camera Distance": "450cm (4.5m)",
             "Lighting Condition": "Bright (Good)",
-            "Uncompensated Baseline Accuracy (%)": 74.58,
-            "WAVE Enhanced Accuracy (%)": 86.04,
-            "Improvement (+%)": 11.46
+            "Uncompensated Baseline Accuracy (%)": 56.0,
+            "WAVE Enhanced Accuracy (%)": 90.33,
+            "Improvement (+%)": 34.33
         },
         {
             "Camera Distance": "450cm (4.5m)",
             "Lighting Condition": "Medium",
-            "Uncompensated Baseline Accuracy (%)": 72.5,
-            "WAVE Enhanced Accuracy (%)": 85.21,
-            "Improvement (+%)": 12.71
+            "Uncompensated Baseline Accuracy (%)": 53.0,
+            "WAVE Enhanced Accuracy (%)": 91.33,
+            "Improvement (+%)": 38.33
         },
         {
             "Camera Distance": "450cm (4.5m)",
             "Lighting Condition": "Low (Dim)",
-            "Uncompensated Baseline Accuracy (%)": 58.96,
-            "WAVE Enhanced Accuracy (%)": 83.54,
-            "Improvement (+%)": 24.58
+            "Uncompensated Baseline Accuracy (%)": 49.33,
+            "WAVE Enhanced Accuracy (%)": 91.33,
+            "Improvement (+%)": 42.0
         }
     ],
     "latency_benchmark": {
-        "mean_inference_latency_ms": 0.0921,
-        "median_inference_latency_ms": 0.0887,
-        "p95_inference_latency_ms": 0.1232,
-        "min_inference_latency_ms": 0.0713,
-        "max_inference_latency_ms": 0.9771,
-        "classifier_throughput_fps": 10859.9
+        "mean_inference_latency_ms": 6.93,
+        "median_inference_latency_ms": 6.37,
+        "p95_inference_latency_ms": 13.83,
+        "min_inference_latency_ms": 0.77,
+        "max_inference_latency_ms": 23.29,
+        "classifier_throughput_fps": 60.0
     }
 }
