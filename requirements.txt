@@ -1,0 +1,8 @@
+mediapipe
+torch
+pynput
+pyautogui
+opencv-python
+numpy
+pillow
+scikit-learn

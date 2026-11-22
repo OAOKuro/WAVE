@@ -12,6 +12,7 @@ from PIL import Image, ImageTk, ImageDraw
 from collections import deque
 from pynput.keyboard import Key, Controller as KeyController
 from pynput.mouse import Controller as MouseController
+from calibration_panel import CalibrationPanel
 
 try:
     import pyautogui
@@ -657,6 +658,7 @@ class WaveDesktopApp:
             min_detection_confidence=max(0.7, float(self.config.get("min_detection_confidence", 0.7))),
             min_tracking_confidence=0.7
         )
+        self._current_hands_confidence = float(self.config.get("min_detection_confidence", 0.7)) #Change min_detection_confidence live for calibration instead of having to restart the app
 
         self.cap = cv2.VideoCapture(0)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -913,6 +915,19 @@ class WaveDesktopApp:
         val = tk.Label(pill, text=f" {value}", font=("Segoe UI", 8, "bold"), fg=self.SLATE_900, bg=self.PILL_BG)
         val.pack(side="left")
         return dot, val
+
+    def _build_calibration_view(self):
+        
+        self.calibration_panel = CalibrationPanel(
+        self.calibration_view,
+        self.ipc_config,
+        on_save_callback=self._on_calibration_saved
+    )
+        self.calibration_panel.pack(fill="both", expand=True)
+        
+    def _on_calibration_saved(self):
+        self.config = self.ipc_config.state
+    print("[Calibration] Saved. Reloading config.")
 
     def _build_keyboard_mapping_view(self):
         wrapper = tk.Frame(self.mapping_view, bg=self.BG_MAIN)
@@ -1211,6 +1226,32 @@ class WaveDesktopApp:
         self.dispatched_action_lbl.configure(text=custom_action if custom_action else desc)
         self.dispatched_key_badge.configure(text=key_tag)
         self.confidence_val_lbl.configure(text=f"{confidence:.1f}%")
+        
+    def _check_and_reload_hands(self):
+        new_conf = float(self.config.get("min_detection_confidence", 0.7))
+        
+        # If there is no changes then no action
+        if abs(new_conf - self._current_hands_confidence) < 0.01:
+            return
+        print(f"[Calibration] Reloading MediaPipe Hands: {self._current_hands_confidence:.2f} → {new_conf:.2f}")
+        
+        # Close old instance
+        try:
+            self.hands.close()
+        except Exception:
+            pass
+        
+        # Recreate with new threshold
+        self.hands = self.mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        model_complexity=1,
+        min_detection_confidence=max(0.7, new_conf),  
+        min_tracking_confidence=0.7
+    )
+        self._current_hands_confidence = new_conf
+        # Clear cached landmarks so next frame uses fresh hand detection
+        self.cached_landmarks = None
 
     def update_loop(self):
         now_tick = cv2.getTickCount()
@@ -1221,16 +1262,57 @@ class WaveDesktopApp:
         self.config = self.ipc_config.poll_if_needed(interval=2.0)
         recognition_on = self.config.get("recognition_enabled", True)
         self._sync_engine_ui(recognition_on)
+        self._check_and_reload_hands()
 
         ret, frame = self.cap.read()
 
 
         if not ret:
             self.pill_cam_dot.configure(fg="#EF4444")
-            self.pill_cam_txt.configure(text=" DISCONNECTED")
-            self._show_camera_error_popup()
-            self.root.after(2000, self.update_loop)
+            self.pill_cam_val.configure(text=" DISCONNECTED")
+            self.cam_txt.configure(text="CAM DISCONNECTED")
+            self.pill_cam_dot.configure(fg="#EF4444")
+
+            if not hasattr(self, "_cam_fail_count"):
+                self._cam_fail_count = 0
+            self._cam_fail_count += 1
+            
+            if self._cam_fail_count % 10 == 0:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                time.sleep(0.3)
+                self.cap = cv2.VideoCapture(0)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                self.cap.set(cv2.CAP_PROP_FPS, 60)
+                if self.cap.isOpened():
+                    self._cam_fail_count = 0
+                    if hasattr(self, "_cam_error_shown"):
+                        self._cam_error_shown = False
+
+            if not hasattr(self, "_cam_error_shown"):
+                self._cam_error_shown = True
+                messagebox.showerror(
+                    "Camera Not Found",
+                    "No webcam detected. Please connect a camera.\n\n"
+                    "Suggested Actions:\n"
+                    "1. Check camera connections\n"
+                    "2. Ensure no other app is using the camera\n"
+                    "3. Restart the application"
+                )
+            self.root.after(15, self.update_loop)
             return
+
+        #Success - camera working
+        self._cam_fail_count = 0
+        if hasattr(self, "_cam_error_shown"):
+            self._cam_error_shown = False
+        self.pill_cam_dot.configure(fg=self.GREEN_TEXT)
+        self.pill_cam_val.configure(text=" CONNECTED")
+        self.cam_txt.configure(text="CAM ACTIVE")
+        self.cam_dot.configure(fg=self.GREEN_TEXT)
 
         if ret:
             frame = cv2.flip(frame, 1)
@@ -1238,7 +1320,7 @@ class WaveDesktopApp:
             if lighting_sens != 0.6: #it is only adjusted if user changed from default
                 brightness_factor = 0.5 + (lighting_sens * 1.0)
                 frame = cv2.convertScaleAbs(frame, alpha=brightness_factor, beta=0)
-            # YOUR CODE: Apply ROI cropping
+            # Apply ROI cropping
             if self.config.get("enable_roi_optional", False):
                 roi = self.config.get("roi_settings", {})
                 h, w = frame.shape[:2]
