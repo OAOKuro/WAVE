@@ -1,0 +1,15 @@
+[02:19:17 | Slide 4: Slide 4 | ⭐ IMPORTANT] Hello everyone, welcome to our wave presentation. Please remember this important point for the final exam. Our neural network uses 42 normalized hand coordinates instead of 63 to achieve under 8 milliseconds of latency. Why does dropping the Z-deaf coordinate in both FPS on standard web counts? That is a great question to review in our summary.
+[17:01:17 | Slide 10: Slide 10 | ❓ Q&A / KEY POINT] And this thing when it's so cold, will you just meet me on the east side?
+[17:03:47 | Slide 10: Slide 10 | 📝 NOTE] So good.
+[17:08:27 | Slide 10: Slide 10 | 📝 NOTE] Thank you.
+[08:00:33 | Slide 10: Slide 10 | 📝 NOTE] The rain against the windowpane was the only sound in the empty room as Alina stared at the blank screen. The cursor blinking like a tiny, mocking heartbeat. Every draft she had written over the past three hours felt entirely hollow, completely missing the raw emotion she needed to capture. With a sigh, she rubbed her tired eyes,.
+[08:09:15 | Slide 1: Slide 1 | 📝 NOTE] Lorraine against the windowpane was the only sound in the empty room as Elina stared at the black screen. The cursor blinking like a tiny mocking heartbeat. Every draft she had written over the past 3 hours felt entirely hollow, completely missing the raw emotion she needed to capture. With a sigh, she rubbed her tired eyes, closed the laptop and decided that some stories were simply better left on tour.
+[09:31:27 | Slide 1 | 📝 NOTE] WAVE in to-.
+[09:31:29 | Slide 1 | ✋ GESTURE] Real-time hand gesture navigation with a slide over a voice assistant.
+[09:31:33 | Slide 1 | 📑 SLIDE] That continuously listens through your default microphone without cutting off your script. Automatically tags each note with the active slide and timestamp, and jumps straight to commands like jump to slide 10 across presentation platforms.
+[09:31:47 | Slide 1 | ⭐ IMPORTANT] It also highlights key study and presentation moments, including important takeaways. Remember reminder...
+[09:31:54 | Slide 1 | 🎓 EXAM] Slide references, gesture controls, and exam points while keeping the microphone active so you can keep presenting seamlessly.
+[09:41:57 | Slide 1 | 📝 NOTE] WAVE integrates real-time hand just...
+[09:42:02 | Slide 1 | 📑 SLIDE] Navigation with a slide aware voice assistant that listened continuously through your default microphone without cutting off your script. Automatically tags each note with the active slide and tighten stamp and jumps straight to commands like jump to slide 10 across presentation platforms.
+[09:42:18 | Slide 1 | ⭐ IMPORTANT] It also highlights key study and presentation moments, including important key takeaways. Remember reminders.
+[09:42:24 | Slide 1 | 🎓 EXAM] Slide references, gesture controls, and exam points while keeping the microphone active so you can keep presenting seamlessly.

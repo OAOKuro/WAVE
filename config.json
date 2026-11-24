@@ -4,31 +4,41 @@
     "min_detection_confidence": 0.7,
     "min_tracking_confidence": 0.7,
     "frame_skip": 2,
-    "model_complexity": 1,
-    "low_light_clahe": true,
+    "model_complexity": 0,
+    "low_light_clahe": false,
     "show_skeleton_overlay": true,
+    "enable_roi_optional": false,
+    "roi_bounds": [
+        0.458,
+        0.235,
+        0.849,
+        0.901
+    ],
     "swipe_cooldown": 0.5,
     "zoom_sensitivity": 0.06,
     "enable_zoom_optional": true,
+    "enable_air_draw": true,
+    "enable_voice_notes": true,
+    "enable_slideshow_launch": true,
+    "enable_blackout_fist": true,
     "active_tab": "live",
     "gesture_mappings": {
         "Left Swipe": "left",
         "Right Swipe": "right",
         "Pinch": "ctrl+-",
         "Reverse Pinch": "ctrl++",
-        "Open Palm": "Key B",
+        "Open Palm": "Engine Toggle",
         "Pinch In / Out": "Ctrl + / -",
         "Index Finger Point": "Key Q"
     },
     "gesture_states": {
         "Right Swipe": true,
         "Left Swipe": true,
-        "Open Palm": false,
+        "Open Palm": true,
         "Pinch In / Out": true,
-        "Index Finger Point": false
+        "Index Finger Point": true
     },
     "target_fps": 60,
-    "enable_roi_optional": false,
     "lighting_sensitivity": 0.6,
     "enable_auto_lighting_optional": false,
     "roi_settings": {
