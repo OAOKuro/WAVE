@@ -8,11 +8,10 @@ import time
 import math
 import os
 import re
-import wave
+import webbrowser
 import ctypes
-import tempfile
-import subprocess
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk, ImageDraw
@@ -49,7 +48,6 @@ try:
 except ImportError:
     HAS_SPEECH_RECOG = False
 
-# Optional OpenAI Whisper Transformer AI Engine (pip install faster-whisper)
 try:
     from faster_whisper import WhisperModel
     HAS_WHISPER_AI = True
@@ -62,10 +60,12 @@ CONFIG_FILE = "config.json"
 MODEL_FILE = os.path.join("models", "gesture_mlp.pth")
 LIVE_LOG_FILE = os.path.join("results", "live_60s_fps_latency_log.csv")
 VOICE_NOTES_FILE = os.path.join("results", "presentation_voice_notes.txt")
+SHARED_HANDOUT_HTML = os.path.join("results", "WAVE_Shared_Lecture_Notes.html")
+SHARED_HANDOUT_MD = os.path.join("results", "WAVE_Shared_Lecture_Notes.md")
 
 
 # ==============================================================================
-# 0. HIGH-SPEED THREADED WEBCAM STREAM (WITH AUTO-RECOVERY & POWER-OFF CONTROL)
+# 0. HIGH-SPEED THREADED WEBCAM STREAM
 # ==============================================================================
 class ThreadedCameraStream:
     def __init__(self, src=0, width=640, height=480, start_enabled=True):
@@ -193,14 +193,9 @@ class ThreadedCameraStream:
 
 
 # ==============================================================================
-# 0B. DEDICATED ASYNC MEDIAPIPE HAND TRACKER (45+ FPS ZERO-LAG FAST DRAWING)
+# 0B. DEDICATED ASYNC MEDIAPIPE HAND TRACKER
 # ==============================================================================
 class AsyncMediaPipeTracker:
-    """
-    Runs MediaPipe 21-point hand landmark detection on a dedicated background
-    thread at the full webcam frame rate (45+ FPS), completely decoupled from
-    Tkinter UI rendering. This eliminates frame drops during fast Air-Drawing!
-    """
     def __init__(self, cam_stream, config_getter):
         self.cam_stream = cam_stream
         self.config_getter = config_getter
@@ -223,7 +218,6 @@ class AsyncMediaPipeTracker:
         self.thread.start()
 
     def _create_hands(self, complexity, min_det):
-        # Slightly lower tracking threshold (0.50) ensures fast motion-blurred fingers stay tracked!
         return self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -261,8 +255,9 @@ class AsyncMediaPipeTracker:
                 self.hands = self._create_hands(comp, conf)
 
             t0 = cv2.getTickCount()
-            # 384x288 resolution processes in ~4.5ms on CPU and reduces motion blur artifacts!
             small = cv2.resize(frame, (384, 288), interpolation=cv2.INTER_LINEAR)
+            
+            # CLAHE optimization here is okay for small frame, but keeping it optional
             if cfg.get("low_light_clahe", False):
                 small = self._apply_clahe(small)
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
@@ -297,6 +292,138 @@ class AsyncMediaPipeTracker:
             self.hands.close()
         except Exception:
             pass
+
+
+# ==============================================================================
+# 0C. ZERO-LAG PRESENTATION DETECTOR (POWERPOINT COM + WINDOW TITLE SCANNER)
+# ==============================================================================
+class SlideContextTracker:
+    PRESENTATION_KEYWORDS = (
+        "canva", "powerpoint", "google slides", "- slides", "keynote",
+        "pitch", "prezi", "zoho show", "onlyoffice", "figma",
+        ".pptx", ".ppt", ".pdf", ".odp", "impress", "wps"
+    )
+    IGNORE_KEYWORDS = (
+        "youtube", "spotify", "netflix", "discord", "whatsapp",
+        "visual studio code", "wave -", "gemini", "chatgpt", "claude"
+    )
+
+    def __init__(self):
+        self.current_slide = 1
+        self.deck_title = "WAVE Presentation"
+        self.slide_title = "Slide 1"
+        self._last_probe_time = 0.0
+        self._is_probing = False
+
+    def advance_slide(self, delta=1):
+        self.current_slide = max(1, self.current_slide + int(delta))
+        self.slide_title = f"Slide {self.current_slide}"
+        self._trigger_async_ppt_probe(force=True)
+
+    def set_slide(self, slide_num):
+        self.current_slide = max(1, int(slide_num))
+        self.slide_title = f"Slide {self.current_slide}"
+        self._trigger_async_ppt_probe(force=True)
+
+    @classmethod
+    def find_open_presentation_window(cls):
+        if os.name != "nt":
+            return None, ""
+        found = []
+        try:
+            EnumWindows = ctypes.windll.user32.EnumWindows
+            EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+            GetWindowTextW = ctypes.windll.user32.GetWindowTextW
+            GetWindowTextLengthW = ctypes.windll.user32.GetWindowTextLengthW
+            IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+
+            def _cb(hwnd, lParam):
+                if IsWindowVisible(hwnd):
+                    length = GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        GetWindowTextW(hwnd, buf, length + 1)
+                        found.append((hwnd, buf.value))
+                return True
+
+            EnumWindows(EnumWindowsProc(_cb), 0)
+        except Exception:
+            pass
+
+        for hwnd, t in found:
+            low = t.lower()
+            if any(ig in low for ig in cls.IGNORE_KEYWORDS):
+                continue
+            if any(pk in low for pk in cls.PRESENTATION_KEYWORDS):
+                return hwnd, t
+        return None, ""
+
+    def get_live_slide_info(self, active_window_title=""):
+        _, pres_win = self.find_open_presentation_window()
+        if not pres_win and active_window_title:
+            low = active_window_title.lower()
+            if not any(ig in low for ig in self.IGNORE_KEYWORDS):
+                if any(pk in low for pk in self.PRESENTATION_KEYWORDS):
+                    pres_win = active_window_title
+
+        if pres_win:
+            cleaned = re.sub(
+                r"\s*[-–|]\s*(Google Chrome|Microsoft Edge|Mozilla Firefox|Brave|Canva|Google Slides|PowerPoint|WPS Office|Adobe Acrobat).*$",
+                "", pres_win, flags=re.IGNORECASE
+            ).strip()
+            if cleaned:
+                self.deck_title = cleaned
+
+        if pres_win and any(k in pres_win.lower() for k in ("powerpoint", ".pptx", ".ppt")):
+            now = time.time()
+            if (now - self._last_probe_time) > 2.5 and not self._is_probing:
+                self._last_probe_time = now
+                self._trigger_async_ppt_probe(force=False)
+
+        return self.current_slide, self.deck_title, self.slide_title
+
+    def _trigger_async_ppt_probe(self, force=False):
+        if self._is_probing and not force:
+            return
+        threading.Thread(target=self._probe_ppt_com_worker, daemon=True).start()
+
+    def _probe_ppt_com_worker(self):
+        if os.name != "nt":
+            return
+        self._is_probing = True
+        try:
+            ps_ppt = (
+                "try { "
+                "$ppt = [Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); "
+                "if ($ppt) { "
+                "  $num = 1; $t = ''; "
+                "  if ($ppt.SlideShowWindows.Count -gt 0) { "
+                "    $s = $ppt.SlideShowWindows.Item(1).View.Slide; "
+                "    $num = $s.SlideIndex; "
+                "    if ($s.Shapes.HasTitle) { $t = $s.Shapes.Title.TextFrame.TextRange.Text } "
+                "  } elseif ($ppt.ActiveWindow -and $ppt.ActiveWindow.View -and $ppt.ActiveWindow.View.Slide) { "
+                "    $s = $ppt.ActiveWindow.View.Slide; "
+                "    $num = $s.SlideIndex; "
+                "    if ($s.Shapes.HasTitle) { $t = $s.Shapes.Title.TextFrame.TextRange.Text } "
+                "  } "
+                "  Write-Output \"$num|||$t\" "
+                "} } catch {}"
+            )
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_ppt],
+                capture_output=True, text=True, timeout=2.0, creationflags=0x08000000
+            )
+            out = (proc.stdout or "").strip()
+            if "|||" in out:
+                num_s, title_s = out.split("|||", 1)
+                if num_s.strip().isdigit():
+                    self.current_slide = int(num_s.strip())
+                title_clean = title_s.replace("\r", " ").replace("\n", " ").strip()
+                self.slide_title = title_clean if title_clean else f"Slide {self.current_slide}"
+        except Exception:
+            pass
+        finally:
+            self._is_probing = False
 
 
 # ==============================================================================
@@ -345,15 +472,9 @@ class HoverTooltip:
 
 
 # ==============================================================================
-# 1B. CONTEXT-AWARE AI SPEECH ENHANCER (OPENAI WHISPER + PHONETIC REPAIR)
+# 1B. CONTEXT-AWARE AI SPEECH ENHANCER, VOICE SLIDE JUMP & TAG DETECTOR
 # ==============================================================================
 class PredictiveContextSpeechEngine:
-    """
-    Combines OpenAI Whisper Transformer AI (or Google Neural Speech API) with
-    context-aware acoustic phrase repair so misheard homophones (like 'Avengers
-    folded traps' -> 'and vendors folded tarps' or 'nether page' -> 'another page')
-    and technical Computer Vision terms are repaired automatically!
-    """
     NEXT_WORD_MAP = {
         "hello": ["everyone", "class", "lecturer", "today", "welcome"],
         "good": ["morning", "afternoon", "evening", "point", "question"],
@@ -363,11 +484,6 @@ class PredictiveContextSpeechEngine:
         "gesture": ["recognition", "control", "system", "engine", "mapping"],
         "hand": ["landmarks", "tracking", "gesture", "detection", "skeleton"],
         "mediapipe": ["hands", "landmarks", "model", "framework", "pipeline"],
-        "region": ["of", "interest"],
-        "neural": ["network", "model", "classifier"],
-        "pipeline": ["latency", "performance", "speed", "fps"],
-        "camera": ["fps", "stream", "sensor", "feed"],
-        "voice": ["note", "recognition", "command", "transcription"],
         "important": ["for", "note", "point", "exam", "test"],
         "remember": ["this", "to", "that", "for"],
         "final": ["exam", "report", "presentation", "demo"],
@@ -376,7 +492,20 @@ class PredictiveContextSpeechEngine:
 
     DEFAULT_SUGGESTIONS = ["Important", "Remember", "Slide", "Gesture", "Exam"]
 
-    # Context-aware acoustic & technical phrase repairs
+    TAG_PRIORITY = [
+        ("exam", "🎓 EXAM"),
+        ("important", "⭐ IMPORTANT"),
+        ("remember", "🧠 REMEMBER"),
+        ("gesture", "✋ GESTURE"),
+        ("slide", "📑 SLIDE"),
+    ]
+
+    IMPORTANT_KEYWORDS = {
+        "important", "exam", "test", "remember", "deadline", "key", "critical",
+        "must", "note", "summary", "conclusion", "takeaway", "formula", "question",
+        "gesture", "slide"
+    }
+
     PHRASE_REPLACEMENTS = [
         (r"\bmedia\s*pipe\b", "MediaPipe"),
         (r"\bopen\s*c\s*v\b", "OpenCV"),
@@ -389,23 +518,50 @@ class PredictiveContextSpeechEngine:
         (r"\bc\s*l\s*a\s*h\s*e\b", "CLAHE"),
         (r"\bkey\s*binds\b", "keybinds"),
         (r"\bmulti\s*layer\s*perceptron\b", "Multi-Layer Perceptron"),
+        (r"\bwave\s+presentation\b", "WAVE presentation"),
+        (r"\bz[-\s]*deaf\b", "Z-depth"),
+        (r"\bz[-\s]*death\b", "Z-depth"),
+        (r"\bin\s+both\s+fps\b", "improve FPS"),
+        (r"\bweb\s+counts\b", "webcams"),
         (r"\bwindow\s+pane\b", "windowpane"),
         (r"\bstreet\s+lights\b", "streetlights"),
-        (r"\bstraight\s+lights\b", "streetlights"),
-        (r"\brayn\s+tap\b", "Rain tapped"),
-        (r"\brain\s+tap\s+softly\b", "Rain tapped softly"),
-        (r"\bmaya\s+set\s+by\b", "Maya sat by"),
-        (r"\bwarm\s+mug\s+of\s+the\b", "warm mug of tea"),
-        (r"\bavengers\s+folded\s+traps\b", "and vendors folded tarps"),
-        (r"\binventors\s+folded\s+tarps\b", "and vendors folded tarps"),
-        (r"\bfolded\s+traps\b", "folded tarps"),
-        (r"\bwhile\s+straight\s+lights\b", "while stray streetlights"),
-        (r"\bwall\s+street\s+lights\b", "while stray streetlights"),
-        (r"\bflickered\s+up\b", "flickered on"),
-        (r"\bturn\s+the\s+nether\s+page\b", "turned another page"),
-        (r"\banother\s+nether\s+page\b", "another page"),
-        (r"\bnether\s+page\b", "another page"),
+        (r"\bfliggered\b", "flickered"),
     ]
+
+    WORD_NUMBERS = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+        "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+        "thirty": 30, "forty": 40, "fifty": 50
+    }
+
+    @classmethod
+    def extract_slide_jump_command(cls, text):
+        low = re.sub(r"[^\w\s]", "", text.lower()).strip()
+        words = low.split()
+        if len(words) > 8:
+            return None
+        m = re.search(r"\b(?:(?:go|got|jump|skip|move|switch|open|show)\s+(?:to\s+)?)?slide\s+(\w+)\b", low)
+        if m:
+            tok = m.group(1)
+            if tok.isdigit():
+                return int(tok)
+            if tok in cls.WORD_NUMBERS:
+                return cls.WORD_NUMBERS[tok]
+        return None
+
+    @classmethod
+    def detect_importance(cls, text):
+        words = set(re.findall(r"\w+", text.lower()))
+        for kw, badge in cls.TAG_PRIORITY:
+            if kw in words:
+                return True, badge
+        if words.intersection(cls.IMPORTANT_KEYWORDS):
+            return True, "⭐ IMPORTANT"
+        if "?" in text or text.lower().startswith(("what ", "why ", "how ", "when ", "who ", "can ")):
+            return True, "❓ Q&A / KEY POINT"
+        return False, "📝 NOTE"
 
     @classmethod
     def get_next_word_predictions(cls, last_word):
@@ -446,16 +602,9 @@ class PredictiveContextSpeechEngine:
 
 
 # ==============================================================================
-# 1C. CATMULL-ROM SPLINE HIGH-SPEED AIR-DRAW OVERLAY (ZERO FAST-MOTION DROP!)
+# 1C. CATMULL-ROM SPLINE HIGH-SPEED AIR-DRAW OVERLAY
 # ==============================================================================
 class AirCanvasOverlay:
-    """
-    Single-Layer Transparent Fullscreen Air-Draw Canvas with Catmull-Rom Cubic
-    Spline Interpolation:
-    • Subdivides every fast movement into 8 intermediate cubic spline points so
-      even whipping your finger across the screen at 2,000 px/sec produces a
-      dense, unbroken, curved neon line!
-    """
     TRANSPARENT_KEY = "#010101"
 
     def __init__(self, root):
@@ -485,7 +634,7 @@ class AirCanvasOverlay:
         self.is_visible = False
         self.is_drawing_active = False
         self.missed_draw_frames = 0
-        self.MAX_GRACE_FRAMES = 22          # 22 frames (~0.6s) grace buffer so fast motion blur never drops!
+        self.MAX_GRACE_FRAMES = 18
         self.win.withdraw()
 
     def _make_click_through(self):
@@ -537,10 +686,6 @@ class AirCanvasOverlay:
 
     @staticmethod
     def _catmull_rom_spline(p0, p1, p2, p3, num_points=8):
-        """
-        Generates smooth intermediate points along a Catmull-Rom curve between
-        p1 and p2 so fast hand movements never look jagged or broken!
-        """
         pts = []
         for i in range(num_points + 1):
             t = i / float(num_points)
@@ -618,68 +763,66 @@ class AirCanvasOverlay:
 
 
 # ==============================================================================
-# 1D. UNBROKEN SESSION RECORDER + OPENAI WHISPER AI TRANSCRIBER
+# 1D. NON-BLOCKING DEFAULT-MIC IN-MEMORY VOICE ENGINE + SMART TAGS
 # ==============================================================================
 class VoiceStickyNoteManager:
-    """
-    UNBROKEN SESSION RECORDER + OPENAI WHISPER TRANSFORMER AI:
-    • Why it's 10x more accurate: Instead of stopping and restarting the Windows
-      microphone every few seconds (which causes Windows winmm driver lockups and
-      slices words in half!), it keeps ONE continuous unbroken recording session
-      open on your default microphone while you speak, and also transcribes live
-      snapshots!
-    • Uses OpenAI's faster-whisper AI model (if installed via 'pip install faster-whisper')
-      or Google's full-context Neural Speech API on the unbroken audio!
-    """
-    def __init__(self, root, os_dispatcher=None, on_state_change=None):
+    def __init__(self, root, slide_tracker, os_dispatcher=None, on_state_change=None):
         self.root = root
+        self.slide_tracker = slide_tracker
         self.os_dispatcher = os_dispatcher
         self.on_state_change = on_state_change
-        self.paragraphs = []
+        self.structured_notes = []
         self.last_spoken_word = ""
         self.is_listening = False
         self.note_win = None
         self.status_lbl = None
+        self.slide_badge_lbl = None
         self.toggle_rec_btn = None
         self.notes_text_widget = None
         self.pred_chips_frame = None
         self.entry_var = tk.StringVar()
         self.entry_box = None
         self.whisper_model = None
-        self.whisper_loading = False
+        self.active_mic_name = "Default Mic"
         os.makedirs("results", exist_ok=True)
 
-        # Pre-load OpenAI Whisper AI model in background if installed
         if HAS_WHISPER_AI:
             threading.Thread(target=self._init_whisper_ai, daemon=True).start()
 
     def _init_whisper_ai(self):
-        self.whisper_loading = True
         try:
             self.whisper_model = WhisperModel("base.en", device="cpu", compute_type="int8")
         except Exception:
             self.whisper_model = None
-        self.whisper_loading = False
+
+    def _set_status_safe(self, text, color="#B45309"):
+        def _apply():
+            if self.status_lbl is not None and self.status_lbl.winfo_exists():
+                self.status_lbl.configure(text=text, fg=color)
+        try:
+            self.root.after(0, _apply)
+        except Exception:
+            pass
 
     def _ensure_window(self):
         if self.note_win is not None and self.note_win.winfo_exists():
             self.note_win.deiconify()
             self.note_win.attributes("-topmost", True)
+            self._update_slide_badge()
             return
 
         sw = self.root.winfo_screenwidth()
         self.note_win = tw = tk.Toplevel(self.root)
         tw.overrideredirect(True)
-        tw.geometry(f"435x345+{sw - 460}+72")
+        tw.geometry(f"460x365+{sw - 485}+72")
         tw.attributes("-topmost", True)
         tw.configure(bg="#FEF08A", highlightthickness=2, highlightbackground="#EAB308")
 
         header = tk.Frame(tw, bg="#FDE047", padx=10, pady=6)
         header.pack(fill="x")
 
-        engine_tag = "WHISPER AI" if HAS_WHISPER_AI else "NEURAL SPEECH AI"
         tk.Label(
-            header, text=f"🎙️ LIVE VOICE NOTES ({engine_tag})",
+            header, text="🎙️ SLIDE-AWARE VOICE NOTES",
             font=("Segoe UI", 9, "bold"), fg="#713F12", bg="#FDE047"
         ).pack(side="left")
 
@@ -690,6 +833,13 @@ class VoiceStickyNoteManager:
         close_btn.pack(side="right")
         close_btn.bind("<Button-1>", lambda e: self._close_sticky_window())
 
+        share_btn = tk.Label(
+            header, text=" 📤 Share ", font=("Segoe UI", 8, "bold"),
+            fg="#FFFFFF", bg="#136DEC", padx=8, pady=2, cursor="hand2"
+        )
+        share_btn.pack(side="right", padx=(0, 6))
+        share_btn.bind("<Button-1>", lambda e: self.open_share_dialog())
+
         self.toggle_rec_btn = tk.Label(
             header, text=" 🎙️ Start Mic ", font=("Segoe UI", 8, "bold"),
             fg="#FFFFFF", bg="#16A34A", padx=8, pady=2, cursor="hand2"
@@ -697,9 +847,20 @@ class VoiceStickyNoteManager:
         self.toggle_rec_btn.pack(side="right", padx=(0, 6))
         self.toggle_rec_btn.bind("<Button-1>", lambda e: self.toggle_continuous_listening())
 
+        slide_strip = tk.Frame(tw, bg="#FEF9C3", padx=10, pady=3)
+        slide_strip.pack(fill="x")
+        s_num, deck, s_title = self.slide_tracker.get_live_slide_info(
+            self.os_dispatcher._get_active_window_title() if self.os_dispatcher else ""
+        )
+        self.slide_badge_lbl = tk.Label(
+            slide_strip, text=f"📑 Active Slide: #{s_num} — {s_title} ({deck[:22]})",
+            font=("Segoe UI", 8, "bold"), fg="#1E40AF", bg="#FEF9C3", anchor="w"
+        )
+        self.slide_badge_lbl.pack(fill="x")
+
         self.status_lbl = tk.Label(
-            tw, text="Hold ✌️ Peace Sign (1s) to START speaking, and ✌️ again to FINISH",
-            font=("Segoe UI", 8, "bold"), fg="#B45309", bg="#FEF08A", anchor="w", padx=10, pady=3
+            tw, text="Click Start Mic OR hold ✌️ to record (Important, Remember, Slide, Gesture, Exam)!",
+            font=("Segoe UI", 8, "bold"), fg="#B45309", bg="#FEF08A", anchor="w", padx=10, pady=2
         )
         self.status_lbl.pack(fill="x")
 
@@ -723,6 +884,9 @@ class VoiceStickyNoteManager:
             wrap="word", relief="flat", padx=8, pady=6, height=8
         )
         self.notes_text_widget.pack(fill="both", expand=True)
+        self.notes_text_widget.tag_configure("header_tag", font=("Segoe UI", 8, "bold"), foreground="#1E40AF")
+        self.notes_text_widget.tag_configure("imp_tag", font=("Segoe UI", 8, "bold"), foreground="#B91C1C", background="#FEE2E2")
+        self.notes_text_widget.tag_configure("cmd_tag", font=("Segoe UI", 8, "bold"), foreground="#15803D", background="#DCFCE7")
 
         bottom_bar = tk.Frame(tw, bg="#FDE047", padx=8, pady=6)
         bottom_bar.pack(fill="x", side="bottom")
@@ -761,8 +925,14 @@ class VoiceStickyNoteManager:
         header.bind("<ButtonPress-1>", _start_move)
         header.bind("<B1-Motion>", _do_move)
 
+    def _update_slide_badge(self):
+        if self.slide_badge_lbl is not None and self.slide_badge_lbl.winfo_exists():
+            win_t = self.os_dispatcher._get_active_window_title() if self.os_dispatcher else ""
+            s_num, deck, s_title = self.slide_tracker.get_live_slide_info(win_t)
+            self.slide_badge_lbl.configure(text=f"📑 Active Slide: #{s_num} — {s_title} ({deck[:22]})")
+
     def _clear_notes(self):
-        self.paragraphs.clear()
+        self.structured_notes.clear()
         if self.notes_text_widget is not None and self.notes_text_widget.winfo_exists():
             self.notes_text_widget.delete("1.0", tk.END)
 
@@ -807,25 +977,190 @@ class VoiceStickyNoteManager:
                 self.last_spoken_word = last_w
             self.add_note_entry(polished)
 
-    def add_note_entry(self, text):
+    def add_note_entry(self, text, slide_override=None, time_override=None):
         text = text.strip()
         if not text:
-            return
-        stamp = time.strftime("%H:%M:%S")
-        self.paragraphs.append(text)
+            return False
+
+        jump_target = PredictiveContextSpeechEngine.extract_slide_jump_command(text)
+        if jump_target is not None:
+            old_slide = self.slide_tracker.current_slide
+            self.slide_tracker.set_slide(jump_target)
+            if self.os_dispatcher:
+                self.os_dispatcher.execute_jump_to_slide(jump_target, current_slide=old_slide)
+
+            self._ensure_window()
+            self._set_status_safe(f"🎯 Jumped to Slide {jump_target}! (Mic still ON)", "#136DEC")
+
+            stamp = time_override or time.strftime("%H:%M:%S")
+            if self.notes_text_widget is not None and self.notes_text_widget.winfo_exists():
+                if self.notes_text_widget.get("1.0", tk.END).strip():
+                    self.notes_text_widget.insert(tk.END, "\n")
+                self.notes_text_widget.insert(tk.END, f"[{stamp}] ", "header_tag")
+                self.notes_text_widget.insert(tk.END, f" 🎯 JUMPED TO SLIDE {jump_target} ", "cmd_tag")
+                self.notes_text_widget.insert(tk.END, "\n")
+                self.notes_text_widget.see(tk.END)
+            return True
+
+        stamp = time_override or time.strftime("%H:%M:%S")
+        win_t = self.os_dispatcher._get_active_window_title() if self.os_dispatcher else ""
+        s_num, deck, s_title = self.slide_tracker.get_live_slide_info(win_t)
+        target_s = slide_override if slide_override is not None else s_num
+        slide_label = f"Slide {target_s}" if slide_override is not None else f"Slide {s_num}: {s_title}"
+
+        is_imp, tag_label = PredictiveContextSpeechEngine.detect_importance(text)
+
+        note_record = {
+            "time": stamp,
+            "slide_num": target_s,
+            "deck": deck,
+            "slide_title": slide_label,
+            "tag": tag_label,
+            "is_important": is_imp,
+            "text": text
+        }
+        self.structured_notes.append(note_record)
+
         try:
             with open(VOICE_NOTES_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{stamp}] {text}\n")
+                f.write(f"[{stamp} | {slide_label} | {tag_label}] {text}\n")
         except Exception:
             pass
 
         self._ensure_window()
         if self.notes_text_widget is not None and self.notes_text_widget.winfo_exists():
-            current_content = self.notes_text_widget.get("1.0", tk.END).strip()
-            sep = " " if current_content else f"[{stamp}] "
-            self.notes_text_widget.insert(tk.END, f"{sep}{text}")
+            if self.notes_text_widget.get("1.0", tk.END).strip():
+                self.notes_text_widget.insert(tk.END, "\n\n")
+            self.notes_text_widget.insert(tk.END, f"[{stamp} • {slide_label}] ", "header_tag")
+            if is_imp:
+                self.notes_text_widget.insert(tk.END, f" {tag_label} ", "imp_tag")
+                self.notes_text_widget.insert(tk.END, f" {text}")
+            else:
+                self.notes_text_widget.insert(tk.END, f"{text}")
             self.notes_text_widget.see(tk.END)
         self._refresh_prediction_chips()
+        self._set_status_safe(f"✓ Saved [{tag_label}] on Slide #{target_s} — Keep speaking!", "#15803D")
+        return False
+
+    def _build_formatted_markdown_and_html(self):
+        if not self.structured_notes:
+            return "", ""
+        deck_name = self.structured_notes[-1]["deck"]
+        date_str = time.strftime("%Y-%m-%d %H:%M")
+
+        # [FIXED] Upgraded Markdown Export formatting to be cleaner for Notion/Discord/WhatsApp
+        md_lines = [f"## 📑 {deck_name}", f"**Lecture & Presenter Notes** ({date_str})\n", "---"]
+        for n in self.structured_notes:
+            prefix = f"**[{n['tag']}]**" if n["is_important"] else ""
+            md_lines.append(f"- **{n['slide_title']}** `({n['time']})` {prefix} {n['text']}")
+        md_content = "\n".join(md_lines)
+
+        cards_html = []
+        for n in self.structured_notes:
+            border_col = "#EF4444" if n["is_important"] else "#136DEC"
+            badge_bg = "#FEE2E2" if n["is_important"] else "#E8F1FD"
+            badge_fg = "#B91C1C" if n["is_important"] else "#136DEC"
+            
+            tag_html = f'<span style="background:{badge_bg}; color:{badge_fg}; padding:3px 8px; border-radius:4px; margin-right:8px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">{n["tag"]}</span>' if n["is_important"] else ''
+            
+            cards_html.append(f"""
+            <div style="border-left:4px solid {border_col}; background:#FFFFFF; padding:16px 20px; margin-bottom:16px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.1);">
+                <div style="font-size:13px; font-weight:600; color:#64748B; margin-bottom:8px; display:flex; align-items:center;">
+                    {tag_html}
+                    <span>{n['slide_title']} <span style="color:#CBD5E1; margin:0 6px;">|</span> 🕒 {n['time']}</span>
+                </div>
+                <div style="font-size:15px; color:#1E293B; line-height:1.6;">{n['text']}</div>
+            </div>
+            """)
+
+        html_doc = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{deck_name} - Shared Notes</title></head>
+<body style="font-family:'Segoe UI',Arial,sans-serif; background:#F8FAFC; padding:32px; max-width:820px; margin:auto;">
+    <h1 style="color:#0F172A; margin-bottom:4px; font-size:24px;">📑 {deck_name}</h1>
+    <p style="color:#64748B; margin-top:0; font-size:14px;">Shared Presentation Notes & Key Takeaways • {date_str}</p>
+    <hr style="border:none; border-top:1px solid #E2E8F0; margin:24px 0;">
+    {''.join(cards_html)}
+</body></html>"""
+
+        with open(SHARED_HANDOUT_MD, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        with open(SHARED_HANDOUT_HTML, "w", encoding="utf-8") as f:
+            f.write(html_doc)
+
+        return md_content, html_doc
+
+    def open_share_dialog(self):
+        if not self.structured_notes:
+            messagebox.showinfo("WAVE Share Notes", "Record or type at least one note first before sharing!")
+            return
+
+        md_content, _ = self._build_formatted_markdown_and_html()
+        self.root.clipboard_clear()
+        self.root.clipboard_append(md_content)
+
+        modal = tk.Toplevel(self.root)
+        modal.title("Share Presentation Notes with Audience")
+        modal.geometry("540x430")
+        modal.configure(bg="#FFFFFF")
+        modal.attributes("-topmost", True)
+
+        tk.Label(
+            modal, text="📤 Export & Share Presentation Notes",
+            font=("Segoe UI", 14, "bold"), fg="#0F172A", bg="#FFFFFF", pady=12
+        ).pack()
+
+        # [FIXED] Cleaned up wording to look more professional
+        tk.Label(
+            modal, text="✓ Markdown copied to clipboard! Ready to paste into Teams, Slack, or WhatsApp.",
+            font=("Segoe UI", 9, "bold"), fg="#15803D", bg="#DCFCE7", padx=12, pady=6
+        ).pack(fill="x", padx=20, pady=(0, 10))
+
+        preview_box = tk.Text(
+            modal, font=("Segoe UI", 9), bg="#F8FAFC", fg="#1E293B",
+            wrap="word", height=11, highlightthickness=1, highlightbackground="#CBD5E1", padx=10, pady=8
+        )
+        preview_box.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+        preview_box.insert("1.0", md_content)
+        preview_box.configure(state="disabled")
+
+        btn_row = tk.Frame(modal, bg="#FFFFFF", pady=10)
+        btn_row.pack(fill="x", padx=20)
+
+        def _copy_again():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(md_content)
+            messagebox.showinfo("Copied!", "Notes copied to clipboard — press Ctrl+V in Teams/WhatsApp/Classroom!", parent=modal)
+
+        def _save_file_as():
+            save_p = filedialog.asksaveasfilename(
+                parent=modal,
+                defaultextension=".html",
+                filetypes=[("Shareable HTML Handout", "*.html"), ("Markdown Study Guide", "*.md")],
+                initialfile="WAVE_Lecture_Handout.html"
+            )
+            if save_p:
+                src_p = SHARED_HANDOUT_MD if save_p.endswith(".md") else SHARED_HANDOUT_HTML
+                with open(src_p, "r", encoding="utf-8") as rf, open(save_p, "w", encoding="utf-8") as wf:
+                    wf.write(rf.read())
+                messagebox.showinfo("Saved!", f"Shareable file saved to:\n{save_p}\n\nYou can now attach or upload this file!", parent=modal)
+
+        def _open_browser():
+            webbrowser.open(os.path.abspath(SHARED_HANDOUT_HTML))
+
+        tk.Button(
+            btn_row, text="📋 Copy Text for Chat", font=("Segoe UI", 9, "bold"),
+            bg="#136DEC", fg="#FFFFFF", relief="flat", padx=12, pady=6, cursor="hand2", command=_copy_again
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_row, text="💾 Save File (.html / .md)", font=("Segoe UI", 9, "bold"),
+            bg="#10B981", fg="#FFFFFF", relief="flat", padx=12, pady=6, cursor="hand2", command=_save_file_as
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_row, text="🌐 Browser / PDF", font=("Segoe UI", 9, "bold"),
+            bg="#F1F5F9", fg="#334155", relief="flat", padx=12, pady=6, cursor="hand2", command=_open_browser
+        ).pack(side="left")
 
     def toggle_continuous_listening(self, on_phrase_callback=None):
         if self.is_listening:
@@ -841,16 +1176,13 @@ class VoiceStickyNoteManager:
         self.is_listening = True
         self._ensure_window()
         if self.toggle_rec_btn is not None:
-            self.toggle_rec_btn.configure(text=" ⏹ Stop & Transcribe ", bg="#DC2626")
-        self.status_lbl.configure(
-            text="🔴 RECORDING UNBROKEN AUDIO — Read your full paragraph, then click Stop / ✌️!",
-            fg="#DC2626"
-        )
+            self.toggle_rec_btn.configure(text=" ⏹ Stop Mic ", bg="#DC2626")
+        self._set_status_safe("🔴 Opening microphone...", "#DC2626")
         if self.on_state_change:
             self.on_state_change(True)
 
         threading.Thread(
-            target=self._unbroken_session_worker,
+            target=self._pure_in_memory_voice_loop,
             args=(on_phrase_callback,),
             daemon=True
         ).start()
@@ -859,146 +1191,143 @@ class VoiceStickyNoteManager:
         self.is_listening = False
         if self.note_win is not None and self.note_win.winfo_exists():
             if self.toggle_rec_btn is not None:
-                self.toggle_rec_btn.configure(text=" ⏳ AI Transcribing... ", bg="#D97706")
-            self.status_lbl.configure(
-                text="⏳ Processing full unbroken audio with AI for 100% sentence accuracy...",
-                fg="#B45309"
-            )
+                self.toggle_rec_btn.configure(text=" 🎙️ Start Mic ", bg="#16A34A")
+            self._set_status_safe("✓ Mic Stopped — Click '📤 Share' to send notes.", "#15803D")
         if self.on_state_change:
             self.on_state_change(False)
 
-    @staticmethod
-    def _mci_send(cmd_str):
-        if os.name != "nt":
-            return
-        buf = ctypes.create_unicode_buffer(256)
-        ctypes.windll.winmm.mciSendStringW(cmd_str, buf, 254, 0)
+    def _resolve_default_mic(self):
+        if not HAS_SPEECH_RECOG:
+            return None, "SpeechRecognition not installed"
+        
+        try:
+            import pyaudio
+        except ImportError:
+            return None, "MISSING_PYAUDIO"
 
-    def _transcribe_full_session_wav(self, wav_file):
-        if not wav_file or not os.path.exists(wav_file):
-            return ""
-        polished_text = ""
-
-        # 1. PRIMARY ENGINE: OpenAI Faster-Whisper Transformer AI (Beam Size 5, Full Paragraph Context)
-        if self.whisper_model is not None:
+        try:
+            return sr.Microphone(), "Default System Mic"
+        except Exception as e:
             try:
-                segments, _ = self.whisper_model.transcribe(
-                    wav_file, beam_size=5, language="en", vad_filter=True
-                )
-                joined = " ".join(seg.text.strip() for seg in segments if seg.text).strip()
-                polished_text, new_last = PredictiveContextSpeechEngine.polish_sentence(joined)
-                if new_last:
-                    self.last_spoken_word = new_last
+                for i, name in enumerate(sr.Microphone.list_microphone_names()):
+                    try:
+                        return sr.Microphone(device_index=i), f"Mic: {name[:25]}"
+                    except Exception:
+                        continue
             except Exception:
-                polished_text = ""
+                pass
+            return None, f"Mic Error: {str(e)[:30]}"
 
-        # 2. SECONDARY ENGINE: Google Neural Speech API on the UNBROKEN WAV file
+    def _process_in_memory_audio(self, audio_data, s_num, deck, s_title, stamp, on_phrase_callback):
+        polished_text = ""
+        try:
+            if self.whisper_model is not None:
+                raw_bytes = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
+                audio_np = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                if audio_np.size > 0 and float(np.sqrt(np.mean(audio_np ** 2))) >= 0.003:
+                    segments, _ = self.whisper_model.transcribe(
+                        audio_np, beam_size=2, language="en", vad_filter=True,
+                        condition_on_previous_text=True,
+                        initial_prompt="Important note, remember this, slide navigation, gesture control, exam question. WAVE presentation, MediaPipe, OpenCV, PyTorch."
+                    )
+                    joined = " ".join(seg.text.strip() for seg in segments if seg.text).strip()
+                    polished_text, new_last = PredictiveContextSpeechEngine.polish_sentence(joined)
+                    if new_last:
+                        self.last_spoken_word = new_last
+        except Exception:
+            polished_text = ""
+
         if not polished_text and HAS_SPEECH_RECOG:
             try:
-                recognizer = sr.Recognizer()
-                with sr.AudioFile(wav_file) as source:
-                    audio_data = recognizer.record(source)
-                all_hypotheses = recognizer.recognize_google(audio_data, language="en-US", show_all=True)
-                polished_text, new_last = PredictiveContextSpeechEngine.select_best_google_transcript(all_hypotheses)
+                r = sr.Recognizer()
+                all_hyp = r.recognize_google(audio_data, language="en-US", show_all=True)
+                polished_text, new_last = PredictiveContextSpeechEngine.select_best_google_transcript(all_hyp)
                 if new_last:
                     self.last_spoken_word = new_last
             except Exception:
-                polished_text = ""
+                pass
 
-        # 3. FALLBACK: Windows System.Speech
-        if not polished_text and os.name == "nt":
+        if polished_text:
+            def _write():
+                self.add_note_entry(polished_text, slide_override=s_num, time_override=stamp)
+                if on_phrase_callback:
+                    on_phrase_callback(polished_text)
+            self.root.after(0, _write)
+
+    def _pure_in_memory_voice_loop(self, on_phrase_callback):
+        mic, mic_label = self._resolve_default_mic()
+        if mic is None:
+            if mic_label == "MISSING_PYAUDIO":
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Missing PyAudio Dependency",
+                    "To use the Voice Assistant, you must install the PyAudio library.\n\n"
+                    "Open Command Prompt or PowerShell and run:\n\n"
+                    "pip install pyaudio\n\n"
+                    "(If that fails, you may need to run 'pip install pipwin' followed by 'pipwin install pyaudio')"
+                ))
+            self._set_status_safe(f"⚠️ {mic_label}", "#DC2626")
+            self.is_listening = False
+            self.root.after(0, self.stop_continuous_listening)
+            return
+
+        r = sr.Recognizer()
+        r.energy_threshold = 200 
+        r.dynamic_energy_threshold = True 
+        r.pause_threshold = 0.8
+        r.non_speaking_duration = 0.5
+
+        stream_opened = threading.Event()
+        open_error = [None]
+
+        def _enter_mic():
             try:
-                ps_script = (
-                    "Add-Type -AssemblyName System.Speech; "
-                    "$rec = New-Object System.Speech.Recognition.SpeechRecognitionEngine; "
-                    f'$rec.SetInputToWaveFile("{wav_file}"); '
-                    "$rec.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar)); "
-                    "$res = $rec.Recognize(); "
-                    "if ($res) { Write-Output $res.Text }"
-                )
-                proc = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_script],
-                    capture_output=True, text=True, timeout=8, creationflags=0x08000000
-                )
-                raw_out = (proc.stdout or "").strip()
-                polished_text, new_last = PredictiveContextSpeechEngine.polish_sentence(raw_out)
-                if new_last:
-                    self.last_spoken_word = new_last
-            except Exception:
-                polished_text = ""
+                with mic as source:
+                    stream_opened.set()
+                    self._set_status_safe(f"🔴 LISTENING ({mic_label}) — Speak freely!", "#DC2626")
+                    while self.is_listening:
+                        win_t = self.os_dispatcher._get_active_window_title() if self.os_dispatcher else ""
+                        s_num, deck, s_title = self.slide_tracker.get_live_slide_info(win_t)
+                        stamp = time.strftime("%H:%M:%S")
+                        try:
+                            audio_data = r.listen(source, timeout=1.0, phrase_time_limit=16.0)
+                            if not self.is_listening:
+                                break
+                            self._set_status_safe(f"⚡ Transcribing Slide #{s_num} note...", "#136DEC")
+                            threading.Thread(
+                                target=self._process_in_memory_audio,
+                                args=(audio_data, s_num, deck, s_title, stamp, on_phrase_callback),
+                                daemon=True
+                            ).start()
+                        except sr.WaitTimeoutError:
+                            self._set_status_safe(f"🔴 LISTENING (Slide #{s_num}) — Speak notes or 'Jump to slide 10'", "#DC2626")
+                            continue
+                        except Exception as inner_err:
+                            self._set_status_safe(f"⚠️ Retry: {str(inner_err)[:35]}", "#D97706")
+                            time.sleep(0.15)
+                            continue
+            except Exception as exc:
+                open_error[0] = exc
+                stream_opened.set()
 
-        try:
-            os.remove(wav_file)
-        except Exception:
-            pass
-        return polished_text
+        mic_thread = threading.Thread(target=_enter_mic, daemon=True)
+        mic_thread.start()
 
-    def _unbroken_session_worker(self, on_phrase_callback):
-        """
-        Records ONE continuous, 100% unbroken audio stream from the Windows Default
-        Microphone for the entire time the mic is ON (up to 45s per segment so zero
-        words are ever cut in half!). The moment you press Stop (or ✌️), it sends
-        the complete unbroken recording to Whisper AI / Google Neural Speech so
-        the AI hears the full paragraph context!
-        """
-        alias = "wave_unbroken_mic"
-        segment_num = 0
+        if not stream_opened.wait(timeout=4.0):
+            self._set_status_safe("⚠️ Mic timed out — Check Windows privacy settings", "#DC2626")
+            self.is_listening = False
+            self.root.after(0, self.stop_continuous_listening)
+            return
 
-        try:
-            while self.is_listening:
-                segment_num += 1
-                wav_path = os.path.join(tempfile.gettempdir(), f"wave_session_{int(time.time()*1000)}.wav")
+        if open_error[0] is not None:
+            self._set_status_safe(f"⚠️ Mic error: {str(open_error[0])[:40]}", "#DC2626")
+            self.is_listening = False
+            self.root.after(0, self.stop_continuous_listening)
+            return
 
-                # Open Default Microphone with 44.1kHz 16-bit PCM clarity
-                self._mci_send(f"close {alias}")
-                self._mci_send(f"open new type waveaudio alias {alias}")
-                self._mci_send(f"set {alias} time format ms bitspersample 16 channels 1 samplespersec 44100 bytespersec 88200 alignment 2")
-                self._mci_send(f"record {alias}")
-
-                start_t = time.time()
-                # Record continuously without interruption until user stops (or 35s max per block)
-                while self.is_listening and (time.time() - start_t) < 35.0:
-                    elapsed_s = int(time.time() - start_t)
-                    if self.note_win is not None and self.note_win.winfo_exists():
-                        self.root.after(
-                            0,
-                            lambda es=elapsed_s: self.status_lbl.configure(
-                                text=f"🔴 RECORDING UNBROKEN AUDIO ({es}s) — Click '⏹ Stop' or ✌️ when finished!",
-                                fg="#DC2626"
-                            ) if self.is_listening else None
-                        )
-                    time.sleep(0.15)
-
-                # Save the unbroken recording cleanly
-                self._mci_send(f"stop {alias}")
-                self._mci_send(f'save {alias} "{wav_path}"')
-                self._mci_send(f"close {alias}")
-
-                if os.path.exists(wav_path) and os.path.getsize(wav_path) > 4000:
-                    polished_text = self._transcribe_full_session_wav(wav_path)
-
-                    def _update_ui(txt=polished_text):
-                        if self.note_win is not None and self.note_win.winfo_exists():
-                            if not self.is_listening and self.toggle_rec_btn is not None:
-                                self.toggle_rec_btn.configure(text=" 🎙️ Start Mic ", bg="#16A34A")
-                        if txt:
-                            self.add_note_entry(txt)
-                            if self.status_lbl is not None:
-                                self.status_lbl.configure(
-                                    text=f"✓ 100% Unbroken Paragraph Saved to {VOICE_NOTES_FILE}",
-                                    fg="#15803D"
-                                )
-                            if on_phrase_callback:
-                                on_phrase_callback(txt)
-                        else:
-                            if self.status_lbl is not None:
-                                self.status_lbl.configure(
-                                    text="⚠️ Could not transcribe audio. Check microphone volume.",
-                                    fg="#D97706"
-                                )
-                    self.root.after(0, _update_ui)
-        finally:
-            self._mci_send(f"close {alias}")
+        mic_thread.join()
+        if self.is_listening:
+            self.is_listening = False
+            self.root.after(0, self.stop_continuous_listening)
 
 
 # ==============================================================================
@@ -1018,12 +1347,13 @@ class IPCConfigManager:
         "show_skeleton_overlay": True,
         "enable_roi_optional": False,
         "roi_bounds": [0.16, 0.10, 0.84, 0.90],
-        "swipe_cooldown": 1.25,
-        "zoom_sensitivity": 0.050,
+        "swipe_cooldown": 0.55,
+        "zoom_sensitivity": 0.042,
         "enable_zoom_optional": True,
         "enable_air_draw": True,
         "enable_voice_notes": True,
         "enable_slideshow_launch": True,
+        "enable_blackout_fist": True,
         "active_tab": "live",
         "gesture_mappings": {
             "Right Swipe": "Right Arrow",
@@ -1093,13 +1423,14 @@ class IPCConfigManager:
 
 
 # ==============================================================================
-# 3. SMART OS HARDWARE ABSTRACTION LAYER (WINDOW-AWARE SLIDESHOW LAUNCHER)
+# 3. UNIVERSAL PLATFORM-ADAPTIVE OS HARDWARE ABSTRACTION LAYER
 # ==============================================================================
 class OSActionDispatcher:
     def __init__(self):
         self.keyboard = KeyController()
         self.mouse = MouseController()
         self.last_emulated_time = 0.0
+        self.slideshow_active = False
 
     @staticmethod
     def _get_active_window_title():
@@ -1110,9 +1441,46 @@ class OSActionDispatcher:
             length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
             buf = ctypes.create_unicode_buffer(length + 1)
             ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-            return buf.value.lower()
+            return buf.value
         except Exception:
             return ""
+
+    @staticmethod
+    def detect_presentation_platform(win_title=""):
+        t = (win_title or "").lower()
+        if "canva" in t:
+            return "canva"
+        if "figma" in t:
+            return "figma"
+        if "keynote" in t:
+            return "keynote"
+        if "google slides" in t or re.search(r"-\s*slides\b", t) or "slides.com" in t:
+            return "google_slides"
+        if any(k in t for k in ("pitch", "prezi", "zoho show")):
+            return "web_slides"
+        if any(k in t for k in ("powerpoint", ".pptx", ".ppt")):
+            return "powerpoint"
+        if any(k in t for k in ("wps", "impress", ".odp", "onlyoffice")):
+            return "impress"
+        if ".pdf" in t or any(k in t for k in ("adobe acrobat", "foxit", "sumatrapdf")):
+            return "pdf"
+        return "generic_web"
+
+    @staticmethod
+    def _focus_presentation_window():
+        if os.name != "nt":
+            return ""
+        try:
+            hwnd, title = SlideContextTracker.find_open_presentation_window()
+            if hwnd:
+                user32 = ctypes.windll.user32
+                user32.ShowWindow(hwnd, 9)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.06)
+                return title
+        except Exception:
+            pass
+        return OSActionDispatcher._get_active_window_title()
 
     def _async_zoom_worker(self, steps, ticks):
         try:
@@ -1146,28 +1514,103 @@ class OSActionDispatcher:
         threading.Thread(target=self._async_zoom_worker, args=(steps, ticks), daemon=True).start()
         return "Ctrl + Plus (Zoom In)" if ticks > 0 else "Ctrl + Minus (Zoom Out)"
 
-    def _async_slideshow_worker(self):
+    def _async_toggle_slideshow_worker(self, enter_mode):
         try:
             self.last_emulated_time = time.time()
-            win_title = self._get_active_window_title()
-            is_powerpoint = any(k in win_title for k in ("powerpoint", "wps", "impress", ".pptx", ".ppt"))
+            win_title = self._focus_presentation_window()
+            platform = self.detect_presentation_platform(win_title)
 
-            if is_powerpoint:
-                self.keyboard.press(Key.f5)
-                self.keyboard.release(Key.f5)
+            if enter_mode:
+                if platform == "google_slides":
+                    with self.keyboard.pressed(Key.ctrl):
+                        self.keyboard.press(Key.f5)
+                        self.keyboard.release(Key.f5)
+                elif platform in ("powerpoint", "impress"):
+                    self.keyboard.press(Key.f5)
+                    self.keyboard.release(Key.f5)
+                elif platform == "pdf":
+                    with self.keyboard.pressed(Key.ctrl):
+                        self.keyboard.press('l')
+                        self.keyboard.release('l')
+                elif platform == "figma":
+                    with self.keyboard.pressed(Key.ctrl):
+                        with self.keyboard.pressed(Key.alt):
+                            self.keyboard.press(Key.enter)
+                            self.keyboard.release(Key.enter)
+                else:
+                    with self.keyboard.pressed(Key.ctrl):
+                        with self.keyboard.pressed(Key.alt):
+                            self.keyboard.press('p')
+                            self.keyboard.release('p')
             else:
-                with self.keyboard.pressed(Key.ctrl):
-                    with self.keyboard.pressed(Key.alt):
-                        self.keyboard.press('p')
-                        self.keyboard.release('p')
+                self.keyboard.press(Key.esc)
+                self.keyboard.release(Key.esc)
             self.last_emulated_time = time.time()
         except Exception:
             pass
 
-    def execute_start_slideshow(self):
+    def execute_toggle_slideshow(self):
+        self.slideshow_active = not self.slideshow_active
         self.last_emulated_time = time.time()
-        threading.Thread(target=self._async_slideshow_worker, daemon=True).start()
-        return "Start Slideshow (Fullscreen)"
+        win_title = self._get_active_window_title()
+        _, pres_title = SlideContextTracker.find_open_presentation_window()
+        platform = self.detect_presentation_platform(pres_title or win_title)
+        threading.Thread(target=self._async_toggle_slideshow_worker, args=(self.slideshow_active,), daemon=True).start()
+        if self.slideshow_active:
+            return f"Enter Slideshow ({platform.replace('_', ' ').title()})"
+        return "Exit Slideshow (Esc)"
+
+    def execute_blackout_screen(self):
+        self.last_emulated_time = time.time()
+        threading.Thread(target=self._async_key_worker, args=("b",), daemon=True).start()
+        return "Blackout / Unblack Screen (Key B)"
+
+    def _async_jump_slide_worker(self, target_slide, current_slide=1):
+        try:
+            self.last_emulated_time = time.time()
+            win_title = self._focus_presentation_window()
+            platform = self.detect_presentation_platform(win_title)
+            target_n = max(1, int(target_slide))
+
+            if platform in ("canva", "keynote", "figma"):
+                delta = target_n - current_slide
+                arrow_key = Key.right if delta > 0 else Key.left
+                for _ in range(abs(delta)):
+                    self.keyboard.press(arrow_key)
+                    self.keyboard.release(arrow_key)
+                    time.sleep(0.01)
+            elif platform == "pdf":
+                with self.keyboard.pressed(Key.ctrl):
+                    with self.keyboard.pressed(Key.shift):
+                        self.keyboard.press('n')
+                        self.keyboard.release('n')
+                time.sleep(0.08)
+                for ch in str(target_n):
+                    self.keyboard.press(ch)
+                    self.keyboard.release(ch)
+                    time.sleep(0.01)
+                self.keyboard.press(Key.enter)
+                self.keyboard.release(Key.enter)
+            else:
+                for ch in str(target_n):
+                    self.keyboard.press(ch)
+                    self.keyboard.release(ch)
+                    time.sleep(0.01)
+                self.keyboard.press(Key.enter)
+                self.keyboard.release(Key.enter)
+
+            self.last_emulated_time = time.time()
+        except Exception:
+            pass
+
+    def execute_jump_to_slide(self, slide_num, current_slide=1):
+        self.last_emulated_time = time.time()
+        threading.Thread(
+            target=self._async_jump_slide_worker,
+            args=(slide_num, current_slide),
+            daemon=True
+        ).start()
+        return f"Jump to Slide {slide_num}"
 
     def _async_key_worker(self, key_action):
         try:
@@ -1262,7 +1705,7 @@ class ExponentialMovingAverage:
 
 
 # ==============================================================================
-# 5. TABLET-STYLE BIDIRECTIONAL PINCH-IN & PINCH-OUT CONTROLLER
+# 5. INSTANT-ARMING TABLET PINCH-IN & PINCH-OUT CONTROLLER
 # ==============================================================================
 class TabletPinchZoomController:
     STATE_IDLE = "IDLE"
@@ -1271,19 +1714,17 @@ class TabletPinchZoomController:
     STATE_ZOOM_OUT = "PINCH IN (ZOOM OUT)"
 
     def __init__(self):
-        self.ratio_ema = ExponentialMovingAverage(alpha=0.45, fast_alpha=0.82)
+        self.ratio_ema = ExponentialMovingAverage(alpha=0.55, fast_alpha=0.88)
         self.state = self.STATE_IDLE
         self.anchor_ratio = 0.0
         self.prev_smoothed_ratio = None
         self.zoom_accumulator = 0.0
 
-        self.RELEASE_RATIO = 1.38
-        self.STEP_SENSITIVITY = 0.050
-        self.DEADZONE_DELTA = 0.024
-        self.DEADZONE_FRAME = 0.005
+        self.RELEASE_RATIO = 1.50
+        self.STEP_SENSITIVITY = 0.042
+        self.DEADZONE_DELTA = 0.016
+        self.DEADZONE_FRAME = 0.004
 
-        self.arm_start_time = 0.0
-        self.ARM_HOLD_TIME = 0.06
         self.last_zoom_dir = 0
         self.last_active_time = 0.0
 
@@ -1292,18 +1733,31 @@ class TabletPinchZoomController:
         self.ratio_ema.reset()
         self.prev_smoothed_ratio = None
         self.zoom_accumulator = 0.0
-        self.arm_start_time = 0.0
         self.last_zoom_dir = 0
 
     @staticmethod
     def _dist(lm1, lm2):
         return math.hypot(lm1.x - lm2.x, lm1.y - lm2.y)
 
+    @classmethod
+    def get_pinch_ratio(cls, landmarks):
+        wrist = landmarks.landmark[0]
+        thumb_tip = landmarks.landmark[4]
+        index_tip = landmarks.landmark[8]
+        middle_mcp = landmarks.landmark[9]
+        index_mcp = landmarks.landmark[5]
+        pinky_mcp = landmarks.landmark[17]
+        palm_bone = cls._dist(wrist, middle_mcp)
+        palm_knuckle_span = cls._dist(index_mcp, pinky_mcp)
+        hand_scale = max(0.65 * palm_bone + 0.35 * palm_knuckle_span, 1e-4)
+        return cls._dist(thumb_tip, index_tip) / hand_scale
+
     def _is_pinch_zoom_posture(self, landmarks, smoothed_ratio):
         wrist = landmarks.landmark[0]
         thumb_tip = landmarks.landmark[4]
         thumb_mcp = landmarks.landmark[2]
         index_tip = landmarks.landmark[8]
+        index_pip = landmarks.landmark[6]
         index_mcp = landmarks.landmark[5]
         middle_tip = landmarks.landmark[12]
         middle_pip = landmarks.landmark[10]
@@ -1311,50 +1765,49 @@ class TabletPinchZoomController:
         ring_pip = landmarks.landmark[14]
         pinky_tip = landmarks.landmark[20]
         pinky_pip = landmarks.landmark[18]
+        pinky_mcp = landmarks.landmark[17]
 
         dx_index = index_tip.x - wrist.x
         dy_index = index_tip.y - wrist.y
-        if abs(dx_index) > 0.11 and abs(dx_index) > abs(dy_index) * 1.15:
+        if abs(dx_index) > 0.12 and abs(dx_index) > abs(dy_index) * 1.15:
+            return False
+
+        index_curled = self._dist(index_tip, wrist) < self._dist(index_pip, wrist) * 1.03
+        if index_curled:
             return False
 
         index_reach = self._dist(index_tip, wrist) / max(self._dist(index_mcp, wrist), 1e-4)
         thumb_reach = self._dist(thumb_tip, wrist) / max(self._dist(thumb_mcp, wrist), 1e-4)
-        if index_reach < 0.72 and thumb_reach < 0.85:
+        if index_reach < 0.90 or thumb_reach < 0.90:
+            return False
+            
+        # [NEW CHECK]: If the thumb is tucked against the palm base, it is an index point, NOT a zoom.
+        thumb_to_index = self._dist(thumb_tip, index_mcp)
+        palm_width = self._dist(index_mcp, pinky_mcp)
+        if thumb_to_index < palm_width * 0.75:
             return False
 
-        ring_curled = self._dist(ring_tip, wrist) < self._dist(ring_pip, wrist) * 1.20
-        pinky_curled = self._dist(pinky_tip, wrist) < self._dist(pinky_pip, wrist) * 1.20
-        middle_curled = self._dist(middle_tip, wrist) < self._dist(middle_pip, wrist) * 1.22
+        ring_curled = self._dist(ring_tip, wrist) < self._dist(ring_pip, wrist) * 1.18
+        pinky_curled = self._dist(pinky_tip, wrist) < self._dist(pinky_pip, wrist) * 1.18
+        middle_curled = self._dist(middle_tip, wrist) < self._dist(middle_pip, wrist) * 1.20
 
         if self.state != self.STATE_IDLE:
-            all_open = (not ring_curled) and (not pinky_curled) and (not middle_curled) and (smoothed_ratio > 0.70)
+            all_open = (not ring_curled) and (not pinky_curled) and (not middle_curled) and (smoothed_ratio > 0.78)
             if all_open or smoothed_ratio > self.RELEASE_RATIO:
                 return False
             return True
 
-        if smoothed_ratio <= 0.44:
+        if smoothed_ratio <= 0.64:
             return True
-        if (ring_curled and pinky_curled and middle_curled) and smoothed_ratio <= 1.05:
+        if (ring_curled and pinky_curled and middle_curled) and smoothed_ratio <= 0.98:
             return True
 
         return False
 
-    def update(self, landmarks, norm_velocity_x, mp_hand_score=0.95, step_sensitivity=0.050):
+    def update(self, landmarks, norm_velocity_x, mp_hand_score=0.95, step_sensitivity=0.042):
         self.STEP_SENSITIVITY = float(step_sensitivity)
         now = time.perf_counter()
-        wrist = landmarks.landmark[0]
-        thumb_tip = landmarks.landmark[4]
-        index_tip = landmarks.landmark[8]
-        middle_mcp = landmarks.landmark[9]
-        index_mcp = landmarks.landmark[5]
-        pinky_mcp = landmarks.landmark[17]
-
-        palm_bone = self._dist(wrist, middle_mcp)
-        palm_knuckle_span = self._dist(index_mcp, pinky_mcp)
-        hand_scale = max(0.65 * palm_bone + 0.35 * palm_knuckle_span, 1e-4)
-
-        raw_pinch = self._dist(thumb_tip, index_tip)
-        normalized_ratio = raw_pinch / hand_scale
+        normalized_ratio = self.get_pinch_ratio(landmarks)
         smoothed_ratio = self.ratio_ema.filter(normalized_ratio, now)
 
         if abs(norm_velocity_x) > 1.80:
@@ -1370,21 +1823,18 @@ class TabletPinchZoomController:
         dynamic_conf = 0.0
 
         if self.state == self.STATE_IDLE:
-            if self.arm_start_time == 0.0:
-                self.arm_start_time = now
-            elif (now - self.arm_start_time) >= self.ARM_HOLD_TIME:
-                self.state = self.STATE_ARMED
-                self.anchor_ratio = max(smoothed_ratio, 0.22)
-                self.prev_smoothed_ratio = smoothed_ratio
-                self.zoom_accumulator = 0.0
-                status_label = "PINCH LOCKED (SPREAD / PINCH)"
-                dynamic_conf = float(np.clip(mp_hand_score * 96.0, 82.0, 98.5))
+            self.state = self.STATE_ARMED
+            self.anchor_ratio = max(smoothed_ratio, 0.24)
+            self.prev_smoothed_ratio = smoothed_ratio
+            self.zoom_accumulator = 0.0
+            status_label = "PINCH LOCKED (SPREAD / PINCH)"
+            dynamic_conf = float(np.clip(mp_hand_score * 96.0, 84.0, 98.8))
 
         elif self.state == self.STATE_ARMED:
             status_label = "PINCH LOCKED (SPREAD / PINCH)"
             delta_from_anchor = smoothed_ratio - self.anchor_ratio
             self.prev_smoothed_ratio = smoothed_ratio
-            dynamic_conf = float(np.clip(mp_hand_score * 96.0 + abs(delta_from_anchor) * 20.0, 84.0, 99.1))
+            dynamic_conf = float(np.clip(mp_hand_score * 96.0 + abs(delta_from_anchor) * 20.0, 85.0, 99.2))
 
             if abs(delta_from_anchor) >= self.DEADZONE_DELTA:
                 self.zoom_accumulator = delta_from_anchor
@@ -1436,15 +1886,16 @@ class VisionGestureEngine:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
 
-        self.trajectory = deque(maxlen=5)
+        self.trajectory = deque(maxlen=4)
         self.prediction_buffer = deque(maxlen=2)
         self.last_trigger_time = 0.0
         self.last_swipe_dir = None
         self.last_swipe_time = 0.0
-        self.RECOIL_LOCK_SEC = 1.10
+        self.RECOIL_LOCK_SEC = 0.65
         self.swipe_latched = False
         self.thumb_latched = False
         self.peace_latched = False
+        self.fist_latched = False
 
     def reset_tracking(self):
         self.trajectory.clear()
@@ -1480,7 +1931,24 @@ class VisionGestureEngine:
     def is_strict_open_palm(landmarks, zoom_active=False):
         if zoom_active:
             return False
+        wrist = landmarks.landmark[0]
+        index_tip, index_pip = landmarks.landmark[8], landmarks.landmark[6]
+        middle_tip, middle_pip = landmarks.landmark[12], landmarks.landmark[10]
+        ring_tip, ring_pip = landmarks.landmark[16], landmarks.landmark[14]
+        pinky_tip, pinky_pip = landmarks.landmark[20], landmarks.landmark[18]
 
+        index_up = math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) > math.hypot(index_pip.x - wrist.x, index_pip.y - wrist.y) * 1.16
+        middle_up = math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) > math.hypot(middle_pip.x - wrist.x, middle_pip.y - wrist.y) * 1.16
+        ring_folded = math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_pip.x - wrist.x, ring_pip.y - wrist.y) * 1.04
+        pinky_folded = math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_pip.x - wrist.x, pinky_pip.y - wrist.y) * 1.04
+        v_spread = math.hypot(index_tip.x - middle_tip.x, index_tip.y - middle_tip.y) > 0.035
+
+        return index_up and middle_up and ring_folded and pinky_folded and v_spread
+
+    @staticmethod
+    def is_thumbs_up_slideshow_gesture(landmarks, zoom_active=False):
+        if zoom_active:
+            return False
         wrist = landmarks.landmark[0]
         thumb_tip = landmarks.landmark[4]
         index_tip, index_pip = landmarks.landmark[8], landmarks.landmark[6]
@@ -1512,6 +1980,28 @@ class VisionGestureEngine:
         return True
 
     @staticmethod
+    def is_closed_fist_blackout_gesture(landmarks, zoom_active=False):
+        if zoom_active:
+            return False
+        wrist = landmarks.landmark[0]
+        thumb_tip, thumb_mcp = landmarks.landmark[4], landmarks.landmark[2]
+        index_tip, index_mcp = landmarks.landmark[8], landmarks.landmark[5]
+        middle_tip, middle_mcp = landmarks.landmark[12], landmarks.landmark[9]
+        ring_tip, ring_mcp = landmarks.landmark[16], landmarks.landmark[13]
+        pinky_tip, pinky_mcp = landmarks.landmark[20], landmarks.landmark[17]
+
+        if thumb_tip.y < (index_mcp.y - 0.035):
+            return False
+
+        all_curled = (
+            math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) < math.hypot(index_mcp.x - wrist.x, index_mcp.y - wrist.y) * 1.08 and
+            math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) < math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y) * 1.08 and
+            math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_mcp.x - wrist.x, ring_mcp.y - wrist.y) * 1.08 and
+            math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_mcp.x - wrist.x, pinky_mcp.y - wrist.y) * 1.08
+        )
+        return all_curled
+
+    @staticmethod
     def is_peace_voice_gesture(landmarks, zoom_active=False):
         if zoom_active:
             return False
@@ -1525,7 +2015,9 @@ class VisionGestureEngine:
         middle_up = math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) > math.hypot(middle_pip.x - wrist.x, middle_pip.y - wrist.y) * 1.16
         ring_folded = math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_pip.x - wrist.x, ring_pip.y - wrist.y) * 1.04
         pinky_folded = math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_pip.x - wrist.x, pinky_pip.y - wrist.y) * 1.04
-        v_spread = math.hypot(index_tip.x - middle_tip.x, index_tip.y - middle_tip.y) > 0.035
+        
+        # [NEW CHECK]: Loosened from 0.035 to 0.025 so it tracks easily from further distances
+        v_spread = math.hypot(index_tip.x - middle_tip.x, index_tip.y - middle_tip.y) > 0.025
 
         return index_up and middle_up and ring_folded and pinky_folded and v_spread
 
@@ -1540,24 +2032,39 @@ class VisionGestureEngine:
         ring_tip, ring_mcp = landmarks.landmark[16], landmarks.landmark[13]
         pinky_tip, pinky_mcp = landmarks.landmark[20], landmarks.landmark[17]
 
-        thumb_up = (thumb_mcp.y - thumb_tip.y) > 0.075 and (thumb_ip.y - thumb_tip.y) > 0.025
+        palm_len = max(math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y), 1e-4)
+        thumb_ext = math.hypot(thumb_tip.x - wrist.x, thumb_tip.y - wrist.y) / palm_len
+
+        thumb_high_above_knuckle = (
+            (thumb_mcp.y - thumb_tip.y) > 0.09 and
+            (thumb_ip.y - thumb_tip.y) > 0.035 and
+            (index_mcp.y - thumb_tip.y) > 0.055 and
+            thumb_ext > 1.25
+        )
         fingers_curled = (
             math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) < math.hypot(index_mcp.x - wrist.x, index_mcp.y - wrist.y) * 1.02 and
             math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) < math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y) * 1.02 and
             math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_mcp.x - wrist.x, ring_mcp.y - wrist.y) * 1.02 and
             math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_mcp.x - wrist.x, pinky_mcp.y - wrist.y) * 1.02
         )
-        return thumb_up and fingers_curled
+        return thumb_high_above_knuckle and fingers_curled
 
     @classmethod
     def is_index_draw_pose(cls, landmarks, zoom_active=False, already_drawing=False):
-        """
-        UNCONDITIONAL PEN-LOCK TRACKING:
-        • Once drawing is active (already_drawing=True), stays locked onto Landmark 8
-          unless the user explicitly spreads all 5 fingers into an Open Palm (✋) or
-          makes a Peace Sign (✌️). Fast hand motion can NEVER break the stroke!
-        """
         if zoom_active:
+            return False
+
+        pinch_ratio = TabletPinchZoomController.get_pinch_ratio(landmarks)
+        if pinch_ratio < (0.52 if already_drawing else 0.66):
+            return False
+            
+        index_mcp = landmarks.landmark[5]
+        thumb_tip = landmarks.landmark[4]
+        pinky_mcp = landmarks.landmark[17]
+        palm_width = math.hypot(index_mcp.x - pinky_mcp.x, index_mcp.y - pinky_mcp.y)
+        thumb_to_index = math.hypot(thumb_tip.x - index_mcp.x, thumb_tip.y - index_mcp.y)
+        
+        if thumb_to_index > palm_width * 0.85 and not already_drawing:
             return False
 
         if already_drawing:
@@ -1565,30 +2072,26 @@ class VisionGestureEngine:
                 return False
             if cls.is_peace_voice_gesture(landmarks, zoom_active=False):
                 return False
+            if cls.is_closed_fist_blackout_gesture(landmarks, zoom_active=False):
+                return False
             return True
 
         wrist = landmarks.landmark[0]
-        thumb_tip = landmarks.landmark[4]
         index_tip, index_pip = landmarks.landmark[8], landmarks.landmark[6]
-        middle_tip, middle_pip, middle_mcp = landmarks.landmark[12], landmarks.landmark[10], landmarks.landmark[9]
+        middle_tip, middle_pip = landmarks.landmark[12], landmarks.landmark[10]
         ring_tip, ring_pip = landmarks.landmark[16], landmarks.landmark[14]
         pinky_tip, pinky_pip = landmarks.landmark[20], landmarks.landmark[18]
 
-        palm_len = max(math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y), 1e-4)
-        pinch_ratio = math.hypot(thumb_tip.x - index_tip.x, thumb_tip.y - index_tip.y) / palm_len
-        if pinch_ratio < 0.38:
-            return False
-
         dx = abs(index_tip.x - wrist.x)
-        dy = abs(index_tip.y - wrist.y)
-        if dx > dy * 1.20:
+        dy = wrist.y - index_tip.y
+        if dy <= 0 or dx > dy * 0.72:
             return False
 
-        index_up = math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) > math.hypot(index_pip.x - wrist.x, index_pip.y - wrist.y) * 1.08
+        index_up = math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) > math.hypot(index_pip.x - wrist.x, index_pip.y - wrist.y) * 1.14
         others_curled = (
-            math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) < math.hypot(middle_pip.x - wrist.x, middle_pip.y - wrist.y) * 1.12 and
-            math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_pip.x - wrist.x, ring_pip.y - wrist.y) * 1.12 and
-            math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_pip.x - wrist.x, pinky_pip.y - wrist.y) * 1.12
+            math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) < math.hypot(middle_pip.x - wrist.x, middle_pip.y - wrist.y) * 1.06 and
+            math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_pip.x - wrist.x, ring_pip.y - wrist.y) * 1.06 and
+            math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_pip.x - wrist.x, pinky_pip.y - wrist.y) * 1.06
         )
         return index_up and others_curled
 
@@ -1607,19 +2110,19 @@ class VisionGestureEngine:
         horizontal_dominance = abs(dx) / max(abs(dy), 1e-4)
         norm_dx = dx / palm_len
 
-        if extension_ratio > 1.14 and horizontal_dominance > 1.18:
+        if extension_ratio > 1.10 and horizontal_dominance > 1.12:
             angle_clarity = min((horizontal_dominance - 1.0) / 1.5, 1.0)
             reach_clarity = min((extension_ratio - 1.0) / 0.8, 1.0)
             dyn_conf = float(np.clip((0.60 * mp_hand_score + 0.25 * angle_clarity + 0.15 * reach_clarity), 0.82, 0.996))
 
-            if norm_dx < -0.88:
+            if norm_dx < -0.82:
                 return "Left Swipe", "DIRECTION: LEFT", dyn_conf
-            elif norm_dx > 0.88:
+            elif norm_dx > 0.82:
                 return "Right Swipe", "DIRECTION: RIGHT", dyn_conf
 
-        if norm_dx < -0.60:
+        if norm_dx < -0.55:
             return None, "DIRECTION: LEFT", float(mp_hand_score * 0.75)
-        elif norm_dx > 0.60:
+        elif norm_dx > 0.55:
             return None, "DIRECTION: RIGHT", float(mp_hand_score * 0.75)
         return None, "DIRECTION: CENTER", float(mp_hand_score * 0.85)
 
@@ -1628,7 +2131,7 @@ class VisionGestureEngine:
         middle_mcp = landmarks.landmark[9]
         palm_len = max(math.hypot(middle_mcp.x - wrist.x, middle_mcp.y - wrist.y), 0.04)
 
-        if self.trajectory and (now_time - self.trajectory[-1][1]) > 0.5:
+        if self.trajectory and (now_time - self.trajectory[-1][1]) > 0.45:
             self.trajectory.clear()
 
         self.trajectory.append((wrist.x, now_time, palm_len))
@@ -1644,17 +2147,17 @@ class VisionGestureEngine:
         norm_velocity_x = norm_dx / dt
 
         diffs = [self.trajectory[i][0] - self.trajectory[i - 1][0] for i in range(1, len(self.trajectory))]
-        min_step = 0.02 * p1
+        min_step = 0.015 * p1
         consistent_right = sum(1 for d in diffs if d > min_step) >= len(diffs) - 1
         consistent_left = sum(1 for d in diffs if d < -min_step) >= len(diffs) - 1
 
-        speed_factor = min(abs(norm_velocity_x) / 5.5, 1.0)
-        dist_factor = min(abs(norm_dx) / 1.1, 1.0)
+        speed_factor = min(abs(norm_velocity_x) / 5.0, 1.0)
+        dist_factor = min(abs(norm_dx) / 1.0, 1.0)
         dyn_conf = float(np.clip(0.55 * mp_hand_score + 0.30 * speed_factor + 0.15 * dist_factor, 0.84, 0.998))
 
-        if norm_dx > 0.42 and norm_velocity_x > 2.10 and consistent_right:
+        if norm_dx > 0.34 and norm_velocity_x > 1.75 and consistent_right:
             return norm_velocity_x, "Right Swipe", dyn_conf
-        elif norm_dx < -0.42 and norm_velocity_x < -2.10 and consistent_left:
+        elif norm_dx < -0.34 and norm_velocity_x < -1.75 and consistent_left:
             return norm_velocity_x, "Left Swipe", dyn_conf
 
         return norm_velocity_x, None, 0.0
@@ -1816,12 +2319,12 @@ class WaveDesktopApp:
         "Left Swipe": ("Previous Slide — Fires once per swipe (returns to center to re-arm)", "← Left Arrow", "← Left Arrow"),
         "Open Palm": ("Pause Engine & Clear Ink — Hold Open Palm (1.2s) to toggle engine", "⏸ Engine Toggle", "⏸ Engine Toggle"),
         "Pinch In / Out": ("Zoom Slide — Spread (+) or Pinch (-) like a tablet", "⊕ Ctrl + / -", "⊕ Ctrl + / -"),
-        "Index Finger Point": ("Air-Draw Annotation — Async 45+ FPS Catmull-Rom Spline Pen", "✏️ Air-Draw Pen", "✏️ Air-Draw Pen")
+        "Index Finger Point": ("Air-Draw Annotation — Hold upright (0.28s) to lock Catmull-Rom pen", "✏️ Air-Draw Pen", "✏️ Air-Draw Pen")
     }
 
     def __init__(self, root):
         self.root = root
-        self.root.title("WAVE - Multimodal Gesture & Voice Presentation Assistant")
+        self.root.title("WAVE - Multimodal Camera-First Presentation Controller")
         self.root.geometry("1280x860")
         self.root.minsize(1150, 810)
         self.root.configure(bg=self.BG_MAIN)
@@ -1832,11 +2335,12 @@ class WaveDesktopApp:
         self.vision_engine = VisionGestureEngine(MODEL_FILE)
         self.zoom_controller = TabletPinchZoomController()
 
+        self.slide_tracker = SlideContextTracker()
+
         self.air_canvas = AirCanvasOverlay(self.root)
         self.voice_notes = VoiceStickyNoteManager(
-            self.root, self.os_dispatcher, on_state_change=self._sync_voice_btn_ui
+            self.root, self.slide_tracker, self.os_dispatcher, on_state_change=self._sync_voice_btn_ui
         )
-        # Zero-lag EMA (fast_alpha=1.00) so fast drawing tracks your fingertip instantaneously!
         self.draw_x_ema = ExponentialMovingAverage(alpha=0.72, fast_alpha=1.00, velocity_threshold=0.04)
         self.draw_y_ema = ExponentialMovingAverage(alpha=0.72, fast_alpha=1.00, velocity_threshold=0.04)
 
@@ -1846,7 +2350,6 @@ class WaveDesktopApp:
 
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
-        # Dedicated Async MediaPipe Thread so UI rendering never slows down hand tracking!
         self.async_tracker = AsyncMediaPipeTracker(self.cam_stream, lambda: self.config)
 
         os.makedirs("results", exist_ok=True)
@@ -1875,6 +2378,13 @@ class WaveDesktopApp:
         self.thumb_hold_start = 0.0
         self.THUMB_HOLD_DURATION = 1.0
         self.last_thumb_trigger_time = 0.0
+
+        self.fist_hold_start = 0.0
+        self.FIST_HOLD_DURATION = 0.8
+        self.last_fist_trigger_time = 0.0
+
+        self.draw_arm_start = 0.0
+        self.DRAW_ARM_DURATION = 0.28
 
         self.global_cooldown_until = 0.0
 
@@ -2104,8 +2614,8 @@ class WaveDesktopApp:
         pills_frame = tk.Frame(self.telemetry_card, bg=self.BG_CARD)
         pills_frame.pack(side="right")
 
-        self.pill_cam_dot, self.pill_cam_val = self._create_status_pill(
-            pills_frame, "CAMERA:", "ACTIVE", self.GREEN_TEXT
+        self.pill_slide_dot, self.pill_slide_val = self._create_status_pill(
+            pills_frame, "SLIDE:", "1", self.BLUE_PRIMARY
         )
         self.pill_hand_dot, self.pill_hand_val = self._create_status_pill(
             pills_frame, "HAND:", "NONE", self.SLATE_400
@@ -2120,7 +2630,6 @@ class WaveDesktopApp:
         )
         self.footer_card.pack(side="top", fill="x")
 
-        # 1. Pause Engine Button
         self.pause_btn_frame = tk.Frame(
             self.footer_card, bg=self.PILL_BG, highlightthickness=1, highlightbackground=self.BORDER_LIGHT,
             padx=10, pady=6, cursor="hand2"
@@ -2148,7 +2657,6 @@ class WaveDesktopApp:
         space_keycap.pack(side="left")
         space_keycap.bind("<Button-1>", lambda e: self.toggle_engine())
 
-        # 2. Turn Off / On Camera Button
         self.cam_btn_frame = tk.Frame(
             self.footer_card, bg=self.PILL_BG, highlightthickness=1, highlightbackground=self.BORDER_LIGHT,
             padx=10, pady=6, cursor="hand2"
@@ -2168,7 +2676,6 @@ class WaveDesktopApp:
         self.cam_btn_txt.pack(side="left")
         self.cam_btn_txt.bind("<Button-1>", lambda e: self.toggle_camera())
 
-        # 3. Continuous Voice Sticky Note Toggle Button (Peace Sign ✌️ or Click)
         self.voice_btn_frame = tk.Frame(
             self.footer_card, bg="#FEF9C3", highlightthickness=1, highlightbackground="#FDE047",
             padx=10, pady=6, cursor="hand2"
@@ -2183,7 +2690,20 @@ class WaveDesktopApp:
         self.voice_btn_lbl.pack(side="left")
         self.voice_btn_lbl.bind("<Button-1>", lambda e: self._toggle_voice_note_action())
 
-        # 4. Clear Air-Draw Ink Button
+        self.jump_btn_frame = tk.Frame(
+            self.footer_card, bg=self.BLUE_LIGHT_BG, highlightthickness=1, highlightbackground="#BFDBFE",
+            padx=10, pady=6, cursor="hand2"
+        )
+        self.jump_btn_frame.pack(side="left", padx=(8, 0))
+        self.jump_btn_frame.bind("<Button-1>", lambda e: self._open_quick_slide_grid())
+
+        jump_lbl = tk.Label(
+            self.jump_btn_frame, text="🔢 Jump Slide", font=("Segoe UI", 9, "bold"),
+            fg=self.BLUE_PRIMARY, bg=self.BLUE_LIGHT_BG, cursor="hand2"
+        )
+        jump_lbl.pack(side="left")
+        jump_lbl.bind("<Button-1>", lambda e: self._open_quick_slide_grid())
+
         self.clear_ink_btn = tk.Frame(
             self.footer_card, bg=self.PILL_BG, highlightthickness=1, highlightbackground=self.BORDER_LIGHT,
             padx=10, pady=6, cursor="hand2"
@@ -2198,10 +2718,10 @@ class WaveDesktopApp:
         clear_lbl.pack(side="left")
         clear_lbl.bind("<Button-1>", lambda e: self.air_canvas.clear_all())
 
-        tk.Frame(self.footer_card, bg=self.BORDER_LIGHT, width=1, height=20).pack(side="left", padx=12)
+        tk.Frame(self.footer_card, bg=self.BORDER_LIGHT, width=1, height=20).pack(side="left", padx=10)
 
         tk.Label(
-            self.footer_card, text="CONFIDENCE: ", font=("Segoe UI", 8, "bold"),
+            self.footer_card, text="CONF: ", font=("Segoe UI", 8, "bold"),
             fg=self.SLATE_400, bg=self.BG_CARD
         ).pack(side="left")
 
@@ -2219,12 +2739,73 @@ class WaveDesktopApp:
         )
         self.fps_footer_lbl.pack(side="right")
 
+    def _open_quick_slide_grid(self):
+        pop = tk.Toplevel(self.root)
+        pop.title("Jump to Any Slide (1 – 50+)")
+        pop.geometry("460x360")
+        pop.configure(bg="#FFFFFF")
+        pop.attributes("-topmost", True)
+
+        tk.Label(
+            pop, text="🔢 Jump Directly to Any Slide",
+            font=("Segoe UI", 12, "bold"), fg="#0F172A", bg="#FFFFFF", pady=10
+        ).pack()
+
+        tk.Label(
+            pop, text="Tip: You can also hold ✌️ Peace Sign and say 'Jump to slide 10'!",
+            font=("Segoe UI", 8, "bold"), fg="#136DEC", bg="#E8F1FD", padx=10, pady=4
+        ).pack(fill="x", padx=20, pady=(0, 8))
+
+        entry_row = tk.Frame(pop, bg="#FFFFFF")
+        entry_row.pack(pady=(0, 10))
+        tk.Label(entry_row, text="Enter Slide #: ", font=("Segoe UI", 9, "bold"), bg="#FFFFFF").pack(side="left")
+        num_var = tk.StringVar()
+        ent = tk.Entry(entry_row, textvariable=num_var, width=8, font=("Segoe UI", 11, "bold"), justify="center")
+        ent.pack(side="left", padx=6)
+        ent.focus_set()
+
+        def _do_jump(target_n):
+            try:
+                n = max(1, int(target_n))
+            except Exception:
+                return
+            pop.destroy()
+            old_slide = self.slide_tracker.current_slide
+            self.slide_tracker.set_slide(n)
+            self.os_dispatcher.execute_jump_to_slide(n, current_slide=old_slide)
+            self._update_telemetry_card(
+                "Right Swipe", 99.0,
+                custom_action=f"Jumped to Slide {n}",
+                custom_key=f"🔢 Slide {n}"
+            )
+
+        ent.bind("<Return>", lambda e: _do_jump(num_var.get()))
+        tk.Button(
+            entry_row, text="Go", font=("Segoe UI", 9, "bold"), bg="#136DEC", fg="#FFFFFF",
+            padx=12, relief="flat", cursor="hand2", command=lambda: _do_jump(num_var.get())
+        ).pack(side="left")
+
+        grid_frame = tk.Frame(pop, bg="#FFFFFF", padx=18)
+        grid_frame.pack(fill="both", expand=True)
+        for idx in range(1, 31):
+            r, c = divmod(idx - 1, 6)
+            is_curr = (idx == self.slide_tracker.current_slide)
+            btn = tk.Label(
+                grid_frame, text=str(idx), width=4, pady=5,
+                font=("Segoe UI", 9, "bold"),
+                bg="#136DEC" if is_curr else "#F1F5F9",
+                fg="#FFFFFF" if is_curr else "#0F172A",
+                cursor="hand2"
+            )
+            btn.grid(row=r, column=c, padx=4, pady=4)
+            btn.bind("<Button-1>", lambda e, sn=idx: _do_jump(sn))
+
     def _sync_voice_btn_ui(self, is_listening):
         if not hasattr(self, "voice_btn_lbl"):
             return
         if is_listening:
             self.voice_btn_frame.configure(bg="#FEE2E2", highlightbackground="#EF4444")
-            self.voice_btn_lbl.configure(text="⏹ Stop & Transcribe (✌️)", fg="#DC2626", bg="#FEE2E2")
+            self.voice_btn_lbl.configure(text="⏹ Stop Mic (✌️)", fg="#DC2626", bg="#FEE2E2")
         else:
             self.voice_btn_frame.configure(bg="#FEF9C3", highlightbackground="#FDE047")
             self.voice_btn_lbl.configure(text="🎙️ Voice Note (✌️)", fg="#854D0E", bg="#FEF9C3")
@@ -2233,24 +2814,24 @@ class WaveDesktopApp:
         started = self.voice_notes.toggle_continuous_listening(
             on_phrase_callback=lambda txt: self._update_telemetry_card(
                 "Open Palm", 99.5,
-                custom_action=f"AI Note: \"{txt[:28]}...\"" if len(txt) > 28 else f"AI Note: \"{txt}\"",
-                custom_key="🎙️ Whisper / Neural AI"
+                custom_action=f"Slide {self.slide_tracker.current_slide} Updated",
+                custom_key="🎙️ Voice AI"
             )
         )
         if started:
             self._update_telemetry_card(
                 "Open Palm", 99.0,
-                custom_action="Unbroken Session Recording ON",
-                custom_key="🔴 Mic Recording"
+                custom_action="Continuous Note Recording / Instant Command Spotter Active",
+                custom_key="🔴 Mic Active"
             )
-            self.live_gesture_title.configure(text="Voice Sticky Note (✌️)")
+            self.live_gesture_title.configure(text="Hands-Free Voice AI (✌️)")
         else:
             self._update_telemetry_card(
                 "Open Palm", 99.0,
-                custom_action="Transcribing Full Paragraph...",
-                custom_key="⏳ AI Processing"
+                custom_action="Voice Mic Stopped",
+                custom_key="✓ Saved"
             )
-            self.live_gesture_title.configure(text="Voice Note Processing (✌️)")
+            self.live_gesture_title.configure(text="Voice Notes Saved (✌️)")
 
     def _create_status_pill(self, parent, prefix, value, dot_color):
         pill = tk.Frame(
@@ -2265,9 +2846,6 @@ class WaveDesktopApp:
         val.pack(side="left")
         return dot, val
 
-    # ==========================================================================
-    # INTERACTIVE ROI DRAG, MOVE & RESIZE HANDLERS ON LIVE VIDEO FEED
-    # ==========================================================================
     def _hit_test_roi_mode(self, nx, ny):
         x0, y0, x1, y1 = self.config.get("roi_bounds", [0.16, 0.10, 0.84, 0.90])
         tol = 0.035
@@ -2383,9 +2961,6 @@ class WaveDesktopApp:
         self.config["roi_bounds"] = list(IPCConfigManager.DEFAULT_ROI)
         self.ipc_config.save(self.config)
 
-    # ==========================================================================
-    # VERTICAL SETTINGS & KEYBINDS VIEW (WITH MULTIMODAL TOGGLES)
-    # ==========================================================================
     def _build_vertical_settings_view(self):
         wrapper = tk.Frame(self.settings_view, bg=self.BG_MAIN)
         wrapper.pack(fill="both", expand=True, padx=56, pady=12)
@@ -2397,7 +2972,7 @@ class WaveDesktopApp:
         title_col.pack(side="left", anchor="w")
 
         tk.Label(
-            title_col, text="⚙  MULTIMODAL VISION, AUDIO & HARDWARE ABSTRACTION LAYER", font=("Segoe UI", 8, "bold"),
+            title_col, text="⚙  CAMERA-FIRST HARDWARE REPLACEMENT & MULTIMODAL SUITE", font=("Segoe UI", 8, "bold"),
             fg=self.BLUE_PRIMARY, bg=self.BG_MAIN
         ).pack(anchor="w")
 
@@ -2432,7 +3007,7 @@ class WaveDesktopApp:
 
         vc_head = tk.Frame(video_card, bg=self.BG_CARD)
         vc_head.pack(fill="x", pady=(0, 4))
-        tk.Label(vc_head, text="VISION ENGINE, ROI & MULTIMODAL PRESENTER SUITE", font=("Segoe UI", 9, "bold"), fg=self.BLUE_PRIMARY, bg=self.BG_CARD).pack(side="left")
+        tk.Label(vc_head, text="VISION ENGINE, ROI & PHYSICAL CLICKER REPLACEMENT CONTROLS", font=("Segoe UI", 9, "bold"), fg=self.BLUE_PRIMARY, bg=self.BG_CARD).pack(side="left")
 
         self.live_lat_badge = tk.Label(vc_head, text="Pipeline Latency: -- ms", font=("Consolas", 8, "bold"), fg=self.GREEN_TEXT, bg=self.GREEN_BG, padx=8, pady=2)
         self.live_lat_badge.pack(side="right")
@@ -2510,28 +3085,29 @@ class WaveDesktopApp:
 
         v_row_draw = tk.Frame(video_card, bg=self.BG_CARD)
         v_row_draw.pack(fill="x", pady=2)
-        tk.Label(v_row_draw, text="Multimodal Air-Draw Screen Annotation (☝️ Index Finger)", font=("Segoe UI", 9, "bold"), fg=self.SLATE_900, bg=self.BG_CARD).pack(side="left")
+        tk.Label(v_row_draw, text="Closed Fist (✊ 0.8s): Screen Blackout ('B')  |  Thumbs Up (👍 1.0s): Enter/Exit Slideshow", font=("Segoe UI", 9, "bold"), fg=self.SLATE_900, bg=self.BG_CARD).pack(side="left")
         self._create_info_badge(
             v_row_draw,
-            "Async 45+ FPS Catmull-Rom Spline Air-Canvas",
-            "Uses a dedicated background MediaPipe thread + Catmull-Rom cubic splines so fast strokes never lag or break.\n"
-            "• Erase Ink: Show an Open Palm (✋) or click 'Clear Ink'."
+            "Platform-Adaptive Slideshow & Screen Blackout",
+            "• Automatically detects Canva (Ctrl+Alt+P), Google Slides (Ctrl+F5), PowerPoint (F5), and PDFs (Ctrl+L)!\n"
+            "• Hold Thumbs Up (👍 1.0s) to Enter/Exit Slideshow; hold Closed Fist (✊ 0.8s) to Blackout Screen ('B')."
         )
-        self.air_draw_toggle = tk.Label(
+        self.fist_toggle = tk.Label(
             v_row_draw,
-            image=self.assets["toggle_on"] if self.config.get("enable_air_draw", True) else self.assets["toggle_off"],
+            image=self.assets["toggle_on"] if self.config.get("enable_blackout_fist", True) else self.assets["toggle_off"],
             bg=self.BG_CARD, cursor="hand2"
         )
-        self.air_draw_toggle.pack(side="right")
-        self.air_draw_toggle.bind("<Button-1>", lambda e: self._toggle_boolean_setting("enable_air_draw", self.air_draw_toggle))
+        self.fist_toggle.pack(side="right")
+        self.fist_toggle.bind("<Button-1>", lambda e: self._toggle_boolean_setting("enable_blackout_fist", self.fist_toggle))
 
         v_row_voice = tk.Frame(video_card, bg=self.BG_CARD)
         v_row_voice.pack(fill="x", pady=2)
-        tk.Label(v_row_voice, text="Unbroken Session Whisper/Neural AI Voice Notes (✌️) & Slideshow (👍)", font=("Segoe UI", 9, "bold"), fg=self.SLATE_900, bg=self.BG_CARD).pack(side="left")
+        tk.Label(v_row_voice, text="Continuous Recording & Instant Voice Slide Jump (✌️ Peace Sign)", font=("Segoe UI", 9, "bold"), fg=self.SLATE_900, bg=self.BG_CARD).pack(side="left")
         self._create_info_badge(
             v_row_voice,
-            "Unbroken Session Recording + OpenAI Whisper / Neural Speech AI",
-            "Records your entire paragraph in one unbroken 44.1kHz stream (no mid-sentence cuts!) and transcribes with full-sentence context."
+            "Unbroken Speech Recording & Universal Slide Jump",
+            "• Say 'Jump to slide 10': Jumps immediately across ANY presentation software.\n"
+            "• Speak continuously: Captures from your default mic in memory and tags Important, Remember, Slide, Gesture, and Exam notes automatically."
         )
         self.voice_toggle = tk.Label(
             v_row_voice,
@@ -2658,7 +3234,7 @@ class WaveDesktopApp:
                 return f"Custom Action ({mapped_val}) — Fires once per swipe (return hand to center to re-arm)"
 
         if "draw" in low or "key l" in low or low == "l":
-            return "Air-Draw & Laser — Point (☝️) to lock Catmull-Rom spline pen onto fingertip at any speed"
+            return "Air-Draw & Laser — Hold upright (0.28s) to lock Catmull-Rom spline pen onto fingertip"
         elif "right" in low:
             return "Next Slide — Triggers Right Arrow shortcut"
         elif "left" in low:
@@ -2708,6 +3284,8 @@ class WaveDesktopApp:
         self.vision_engine.swipe_latched = False
         self.vision_engine.thumb_latched = False
         self.vision_engine.peace_latched = False
+        self.vision_engine.fist_latched = False
+        self.draw_arm_start = 0.0
         self.air_canvas.lift_pen()
         self.cam_off_rendered = False
         self._sync_camera_ui(new_cam_state)
@@ -2718,15 +3296,11 @@ class WaveDesktopApp:
         if cam_on:
             self.cam_dot.configure(fg=self.GREEN_TEXT)
             self.cam_txt.configure(text="CAM ACTIVE", fg=self.SLATE_700)
-            self.pill_cam_dot.configure(fg=self.GREEN_TEXT)
-            self.pill_cam_val.configure(text=" ACTIVE")
             self.cam_btn_txt.configure(text="Turn Off Camera")
             self.cam_btn_icon.configure(fg=self.RED_TEXT)
         else:
             self.cam_dot.configure(fg=self.RED_TEXT)
             self.cam_txt.configure(text="CAM OFF (CLICK TO START)", fg=self.RED_TEXT)
-            self.pill_cam_dot.configure(fg=self.RED_TEXT)
-            self.pill_cam_val.configure(text=" OFF")
             self.pill_hand_dot.configure(fg=self.SLATE_400)
             self.pill_hand_val.configure(text=" NONE")
             self.cam_btn_txt.configure(text="Turn On Camera")
@@ -2862,6 +3436,8 @@ class WaveDesktopApp:
         self.vision_engine.swipe_latched = False
         self.vision_engine.thumb_latched = False
         self.vision_engine.peace_latched = False
+        self.vision_engine.fist_latched = False
+        self.draw_arm_start = 0.0
         self.air_canvas.lift_pen()
         self._sync_engine_ui(new_state)
 
@@ -2980,6 +3556,8 @@ class WaveDesktopApp:
                 self.palm_hold_start = 0.0
                 self.peace_hold_start = 0.0
                 self.thumb_hold_start = 0.0
+                self.fist_hold_start = 0.0
+                self.draw_arm_start = 0.0
             self.last_loop_tick_time = now_tick
 
             if self.roi_drag_mode is None:
@@ -3006,34 +3584,39 @@ class WaveDesktopApp:
                 recognition_on = self.config.get("recognition_enabled", True)
                 self._sync_engine_ui(recognition_on)
 
-                # Read latest 45+ FPS landmarks from our non-blocking AsyncMediaPipeTracker!
                 self.cached_landmarks, self.cached_hand_score, mean_lat = self.async_tracker.get_latest()
+
+                active_title = self.os_dispatcher._get_active_window_title()
+                s_num, _, _ = self.slide_tracker.get_live_slide_info(active_title)
+                self.pill_slide_val.configure(text=f" {s_num}")
+                self.voice_notes._update_slide_badge()
 
                 hand_detected = self.cached_landmarks is not None
                 now_time = time.time()
-                swipe_cooldown = max(float(self.config.get("swipe_cooldown", 1.25)), 1.00)
-                zoom_sens = float(self.config.get("zoom_sensitivity", 0.050))
+                swipe_cooldown = max(float(self.config.get("swipe_cooldown", 0.55)), 0.45)
+                zoom_sens = float(self.config.get("zoom_sensitivity", 0.042))
                 roi_enabled = bool(self.config.get("enable_roi_optional", False))
                 roi_bounds = self.config.get("roi_bounds", [0.16, 0.10, 0.84, 0.90])
 
                 if is_live_tab:
                     card_w = max(self.video_card.winfo_width(), 860)
                     card_h = max(self.video_card.winfo_height(), 460)
-                    base_vis = self._apply_clahe_low_light(raw_frame) if self.config.get("low_light_clahe", False) else raw_frame
-                    display_frame = cv2.resize(base_vis, (card_w, card_h), interpolation=cv2.INTER_NEAREST)
+                    
+                    # [OPTIMIZATION] Resize the frame BEFORE applying CLAHE to save CPU cycles
+                    display_frame = cv2.resize(raw_frame, (card_w, card_h), interpolation=cv2.INTER_NEAREST)
+                    if self.config.get("low_light_clahe", False):
+                        display_frame = self._apply_clahe_low_light(display_frame)
                 else:
                     card_w, card_h = 960, 500
                     display_frame = None
 
-                active_title = self.os_dispatcher._get_active_window_title()
-                wave_is_active = ("wave" in active_title) and is_live_tab
+                wave_is_active = ("wave -" in active_title.lower()) and is_live_tab
 
                 in_presenter_roi = True
                 if not hand_detected:
                     if is_live_tab and roi_enabled and display_frame is not None:
                         self._draw_roi_overlay(display_frame, card_w, card_h, inside_roi=True)
 
-                    # Use grace buffer even when MediaPipe briefly loses hand due to ultra-fast motion blur!
                     self.air_canvas.step_grace_or_lift()
                     self.pill_hand_dot.configure(fg=self.SLATE_400)
                     self.pill_hand_val.configure(text=" NONE")
@@ -3046,9 +3629,12 @@ class WaveDesktopApp:
                     self.vision_engine.swipe_latched = False
                     self.vision_engine.thumb_latched = False
                     self.vision_engine.peace_latched = False
+                    self.vision_engine.fist_latched = False
                     self.palm_hold_start = 0.0
                     self.peace_hold_start = 0.0
                     self.thumb_hold_start = 0.0
+                    self.fist_hold_start = 0.0
+                    self.draw_arm_start = 0.0
                 else:
                     in_safe_margin = self.vision_engine.is_within_safe_frame_margin(self.cached_landmarks)
                     in_presenter_roi = (
@@ -3071,6 +3657,8 @@ class WaveDesktopApp:
                         self.vision_engine.swipe_latched = False
                         self.vision_engine.thumb_latched = False
                         self.vision_engine.peace_latched = False
+                        self.vision_engine.fist_latched = False
+                        self.draw_arm_start = 0.0
                         self.air_canvas.lift_pen()
 
                     wrist = self.cached_landmarks.landmark[0]
@@ -3092,13 +3680,18 @@ class WaveDesktopApp:
                     pt_thumb = (int(thumb_tip.x * card_w), int(thumb_tip.y * card_h))
 
                     gesture_states = self.config.get("gesture_states", {})
-                    norm_vel_x, velocity_swipe, vel_conf = self.vision_engine.compute_velocity_and_swipe(
-                        self.cached_landmarks, now_time, mp_hand_score=self.cached_hand_score
-                    )
-                    static_dir_gesture, dir_banner, dir_conf = self.vision_engine.detect_static_direction_pose(
-                        self.cached_landmarks, mp_hand_score=self.cached_hand_score
-                    )
-                    mlp_label, mlp_conf = self.vision_engine.classify_static_mlp(self.cached_landmarks, gesture_states)
+                    
+                    # [OPTIMIZATION] Strict State Isolation: if drawing or zooming, disable swiping completely to avoid "Talking Hands" false triggers
+                    if self.air_canvas.is_drawing_active or self.zoom_controller.state != TabletPinchZoomController.STATE_IDLE:
+                        norm_vel_x, velocity_swipe, vel_conf = 0.0, None, 0.0
+                        static_dir_gesture, dir_banner, dir_conf = None, "ACTION LOCKED (DRAW/ZOOM)", 0.0
+                    else:
+                        norm_vel_x, velocity_swipe, vel_conf = self.vision_engine.compute_velocity_and_swipe(
+                            self.cached_landmarks, now_time, mp_hand_score=self.cached_hand_score
+                        )
+                        static_dir_gesture, dir_banner, dir_conf = self.vision_engine.detect_static_direction_pose(
+                            self.cached_landmarks, mp_hand_score=self.cached_hand_score
+                        )
 
                     if static_dir_gesture is None and velocity_swipe is None and abs(norm_vel_x) < 0.85:
                         self.vision_engine.swipe_latched = False
@@ -3118,52 +3711,32 @@ class WaveDesktopApp:
 
                     is_peace = (
                         self.config.get("enable_voice_notes", True) and
-                        abs(norm_vel_x) < 0.80 and
+                        abs(norm_vel_x) < 1.20 and
                         self.vision_engine.is_peace_voice_gesture(self.cached_landmarks)
                     )
                     if not is_peace:
                         self.vision_engine.peace_latched = False
 
+                    is_closed_fist = (
+                        self.config.get("enable_blackout_fist", True) and
+                        abs(norm_vel_x) < 0.80 and
+                        self.vision_engine.is_closed_fist_blackout_gesture(self.cached_landmarks)
+                    )
+                    if not is_closed_fist:
+                        self.vision_engine.fist_latched = False
+                        self.fist_hold_start = 0.0
+
                     is_thumbs_up = (
                         self.config.get("enable_slideshow_launch", True) and
+                        not is_closed_fist and
                         abs(norm_vel_x) < 0.80 and
                         self.vision_engine.is_thumbs_up_slideshow_gesture(self.cached_landmarks)
                     )
                     if not is_thumbs_up:
                         self.vision_engine.thumb_latched = False
 
-                    is_air_draw = (
-                        recognition_on and in_presenter_roi and
-                        self.config.get("enable_air_draw", True) and
-                        gesture_states.get("Index Finger Point", True) and
-                        not is_peace and not is_thumbs_up and
-                        (self.air_canvas.is_drawing_active or velocity_swipe is None) and
-                        self.vision_engine.is_index_draw_pose(
-                            self.cached_landmarks,
-                            zoom_active=(self.zoom_controller.state != TabletPinchZoomController.STATE_IDLE),
-                            already_drawing=self.air_canvas.is_drawing_active
-                        )
-                    )
-
-                    # PRIORITY 0: Pen-Locked Catmull-Rom Spline Air-Draw (Follows Landmark 8 at ANY speed!)
-                    if is_air_draw and now_time >= self.global_cooldown_until:
-                        self.zoom_controller.reset()
-                        self.vision_engine.reset_tracking()
-                        sm_x = self.draw_x_ema.filter(index_tip.x)
-                        sm_y = self.draw_y_ema.filter(index_tip.y)
-                        sx, sy = self.air_canvas.compute_screen_pixel(
-                            sm_x, sm_y,
-                            video_widget=self.video_label,
-                            wave_is_active=wave_is_active,
-                            roi_enabled=roi_enabled,
-                            roi_bounds=roi_bounds
-                        )
-                        self.air_canvas.add_screen_point(sx, sy, pen_down=True)
-                        self.direction_banner_text = "AIR-DRAWING LOCKED (OPEN PALM TO CLEAR)"
-                        self._update_telemetry_card("Index Finger Point", 98.5)
-
-                    # PRIORITY 1: One-Shot Swipe (Only when NOT drawing)
-                    elif recognition_on and hand_valid and now_time >= self.global_cooldown_until and not self.air_canvas.is_drawing_active and (velocity_swipe is not None or static_dir_gesture is not None):
+                    if recognition_on and hand_valid and now_time >= self.global_cooldown_until and not self.air_canvas.is_drawing_active and (velocity_swipe is not None or static_dir_gesture is not None):
+                        self.draw_arm_start = 0.0
                         self.zoom_controller.reset()
                         self.air_canvas.lift_pen()
                         if is_live_tab:
@@ -3188,36 +3761,26 @@ class WaveDesktopApp:
                                 gesture_states
                             )
                             if action_res != "Disabled":
+                                if detected_gesture == "Right Swipe":
+                                    self.slide_tracker.advance_slide(1)
+                                elif detected_gesture == "Left Swipe":
+                                    self.slide_tracker.advance_slide(-1)
                                 self._update_telemetry_card(detected_gesture, dyn_conf_pct)
                                 self.vision_engine.last_trigger_time = now_time
                                 self.vision_engine.last_swipe_dir = detected_gesture
                                 self.vision_engine.last_swipe_time = now_time
                                 self.vision_engine.swipe_latched = True
-                                self.global_cooldown_until = now_time + 1.25
+                                self.global_cooldown_until = now_time + 0.45
                                 self.vision_engine.reset_tracking()
 
-                    # PRIORITY 2: Pinch-to-Zoom, Peace Continuous Mic Toggle, or Thumbs-Up Slideshow
                     elif recognition_on and hand_valid:
-                        self.air_canvas.step_grace_or_lift()
-                        if self.air_canvas.is_drawing_active:
-                            sm_x = self.draw_x_ema.filter(index_tip.x)
-                            sm_y = self.draw_y_ema.filter(index_tip.y)
-                            sx, sy = self.air_canvas.compute_screen_pixel(
-                                sm_x, sm_y,
-                                video_widget=self.video_label,
-                                wave_is_active=wave_is_active,
-                                roi_enabled=roi_enabled,
-                                roi_bounds=roi_bounds
-                            )
-                            self.air_canvas.add_screen_point(sx, sy, pen_down=True)
-
                         zoom_state = self.zoom_controller.state
                         zoom_ticks = 0
                         smoothed_ratio = 0.0
                         zoom_label = ""
                         zoom_conf_pct = 0.0
 
-                        if not self.air_canvas.is_drawing_active and self.config.get("enable_zoom_optional", True) and gesture_states.get("Pinch In / Out", True):
+                        if not is_closed_fist and not is_thumbs_up and not is_peace and self.config.get("enable_zoom_optional", True) and gesture_states.get("Pinch In / Out", True):
                             zoom_state, zoom_ticks, smoothed_ratio, zoom_label, zoom_conf_pct = self.zoom_controller.update(
                                 self.cached_landmarks, norm_vel_x,
                                 mp_hand_score=self.cached_hand_score,
@@ -3225,6 +3788,7 @@ class WaveDesktopApp:
                             )
 
                         if zoom_state != TabletPinchZoomController.STATE_IDLE:
+                            self.draw_arm_start = 0.0
                             self.air_canvas.lift_pen()
                             if is_live_tab:
                                 self._draw_pinch_hud(display_frame, pt_thumb, pt_index, zoom_state, smoothed_ratio)
@@ -3248,56 +3812,127 @@ class WaveDesktopApp:
                                     custom_action="Zoom Out (-)", custom_key="⊕ Ctrl + Minus (-)"
                                 )
                             self.vision_engine.prediction_buffer.clear()
-                        elif now_time >= self.global_cooldown_until:
-                            # B. PEACE SIGN (✌️) HOLD -> START / STOP UNBROKEN VOICE SESSION
-                            if is_peace and not self.vision_engine.peace_latched and (now_time - self.last_peace_trigger_time) > 2.5:
-                                self.air_canvas.lift_pen()
-                                if self.peace_hold_start == 0.0:
-                                    self.peace_hold_start = now_time
-                                else:
-                                    held_p = now_time - self.peace_hold_start
-                                    rem_p = max(0.0, self.PEACE_HOLD_DURATION - held_p)
-                                    act_lbl = "STOP & TRANSCRIBE" if self.voice_notes.is_listening else "START VOICE NOTE"
-                                    self.direction_banner_text = f"HOLD PEACE SIGN TO {act_lbl} ({rem_p:.1f}s)"
-                                    if held_p >= self.PEACE_HOLD_DURATION:
-                                        self.last_peace_trigger_time = now_time
-                                        self.peace_hold_start = 0.0
-                                        self.vision_engine.peace_latched = True
-                                        self.global_cooldown_until = now_time + 1.5
-                                        self._toggle_voice_note_action()
-                            elif is_peace and self.vision_engine.peace_latched:
-                                state_msg = "RECORDING ON" if self.voice_notes.is_listening else "TRANSCRIBING"
-                                self.direction_banner_text = f"{state_msg} (RELEASE PEACE SIGN)"
-                            else:
-                                self.peace_hold_start = 0.0
+                        else:
+                            is_air_draw_pose = (
+                                self.config.get("enable_air_draw", True) and
+                                gesture_states.get("Index Finger Point", True) and
+                                not is_peace and not is_thumbs_up and not is_closed_fist and
+                                (self.air_canvas.is_drawing_active or abs(norm_vel_x) < 0.45) and
+                                self.vision_engine.is_index_draw_pose(
+                                    self.cached_landmarks,
+                                    zoom_active=False,
+                                    already_drawing=self.air_canvas.is_drawing_active
+                                )
+                            )
 
-                            # C. THUMBS UP (👍) HOLD -> ONE-SHOT FULLSCREEN SLIDESHOW
-                            if is_thumbs_up and not self.vision_engine.thumb_latched and (now_time - self.last_thumb_trigger_time) > 4.0:
-                                self.air_canvas.lift_pen()
-                                if self.thumb_hold_start == 0.0:
-                                    self.thumb_hold_start = now_time
+                            if is_air_draw_pose and now_time >= self.global_cooldown_until:
+                                if self.air_canvas.is_drawing_active:
+                                    self.vision_engine.reset_tracking()
+                                    sm_x = self.draw_x_ema.filter(index_tip.x)
+                                    sm_y = self.draw_y_ema.filter(index_tip.y)
+                                    sx, sy = self.air_canvas.compute_screen_pixel(
+                                        sm_x, sm_y,
+                                        video_widget=self.video_label,
+                                        wave_is_active=wave_is_active,
+                                        roi_enabled=roi_enabled,
+                                        roi_bounds=roi_bounds
+                                    )
+                                    self.air_canvas.add_screen_point(sx, sy, pen_down=True)
+                                    self.direction_banner_text = "AIR-DRAWING LOCKED (OPEN PALM TO CLEAR)"
+                                    self._update_telemetry_card("Index Finger Point", 98.5)
                                 else:
-                                    held_t = now_time - self.thumb_hold_start
-                                    rem_t = max(0.0, self.THUMB_HOLD_DURATION - held_t)
-                                    self.direction_banner_text = f"HOLD THUMBS UP FOR SLIDESHOW ({rem_t:.1f}s)"
-                                    if held_t >= self.THUMB_HOLD_DURATION:
-                                        self.last_thumb_trigger_time = now_time
-                                        self.thumb_hold_start = 0.0
-                                        self.vision_engine.thumb_latched = True
-                                        self.global_cooldown_until = now_time + 2.0
-                                        self.os_dispatcher.execute_start_slideshow()
-                                        self._update_telemetry_card(
-                                            "Right Swipe", 98.5,
-                                            custom_action="Start Fullscreen Slideshow",
-                                            custom_key="▶ Slideshow"
+                                    if self.draw_arm_start == 0.0:
+                                        self.draw_arm_start = now_time
+                                    held_d = now_time - self.draw_arm_start
+                                    if held_d < self.DRAW_ARM_DURATION:
+                                        self.direction_banner_text = f"HOLD UPRIGHT TO ARM PEN ({self.DRAW_ARM_DURATION - held_d:.1f}s)"
+                                    else:
+                                        self.draw_x_ema.reset()
+                                        self.draw_y_ema.reset()
+                                        sm_x = self.draw_x_ema.filter(index_tip.x)
+                                        sm_y = self.draw_y_ema.filter(index_tip.y)
+                                        sx, sy = self.air_canvas.compute_screen_pixel(
+                                            sm_x, sm_y,
+                                            video_widget=self.video_label,
+                                            wave_is_active=wave_is_active,
+                                            roi_enabled=roi_enabled,
+                                            roi_bounds=roi_bounds
                                         )
-                                        self.live_gesture_title.configure(text="Thumbs Up (Slideshow)")
-                            elif is_thumbs_up and self.vision_engine.thumb_latched:
-                                self.direction_banner_text = "SLIDESHOW STARTED (RELEASE THUMBS UP)"
+                                        self.air_canvas.add_screen_point(sx, sy, pen_down=True)
                             else:
-                                self.thumb_hold_start = 0.0
+                                self.draw_arm_start = 0.0
+                                self.air_canvas.step_grace_or_lift()
+                                if self.air_canvas.is_drawing_active:
+                                    sm_x = self.draw_x_ema.filter(index_tip.x)
+                                    sm_y = self.draw_y_ema.filter(index_tip.y)
+                                    sx, sy = self.air_canvas.compute_screen_pixel(
+                                        sm_x, sm_y,
+                                        video_widget=self.video_label,
+                                        wave_is_active=wave_is_active,
+                                        roi_enabled=roi_enabled,
+                                        roi_bounds=roi_bounds
+                                    )
+                                    self.air_canvas.add_screen_point(sx, sy, pen_down=True)
 
-                    # OPEN PALM HOLD CHECK: Clears any Air-Draw ink immediately AND pauses Engine at 1.2s
+                            if now_time >= self.global_cooldown_until and not self.air_canvas.is_drawing_active:
+                                if is_closed_fist and not self.vision_engine.fist_latched and (now_time - self.last_fist_trigger_time) > 1.5:
+                                    if self.fist_hold_start == 0.0:
+                                        self.fist_hold_start = now_time
+                                    else:
+                                        held_f = now_time - self.fist_hold_start
+                                        rem_f = max(0.0, self.FIST_HOLD_DURATION - held_f)
+                                        self.direction_banner_text = f"HOLD FIST FOR BLACKOUT SCREEN ({rem_f:.1f}s)"
+                                        if held_f >= self.FIST_HOLD_DURATION:
+                                            self.last_fist_trigger_time = now_time
+                                            self.fist_hold_start = 0.0
+                                            self.vision_engine.fist_latched = True
+                                            self.global_cooldown_until = now_time + 1.0
+                                            self.os_dispatcher.execute_blackout_screen()
+                                            self._update_telemetry_card(
+                                                "Open Palm", 98.5,
+                                                custom_action="Blackout / Unblack Screen",
+                                                custom_key="✊ Key B"
+                                            )
+                                            self.live_gesture_title.configure(text="Closed Fist (Blackout)")
+                                elif is_closed_fist and self.vision_engine.fist_latched:
+                                    self.direction_banner_text = "SCREEN BLACKOUT TOGGLED (RELEASE FIST)"
+
+                                if is_peace and not self.vision_engine.peace_latched and (now_time - self.last_peace_trigger_time) > 2.0:
+                                    self.last_peace_trigger_time = now_time
+                                    self.vision_engine.peace_latched = True
+                                    self.global_cooldown_until = now_time + 1.0
+                                    self._toggle_voice_note_action()
+                                elif is_peace and self.vision_engine.peace_latched:
+                                    state_msg = "HANDS-FREE VOICE ON" if self.voice_notes.is_listening else "VOICE SAVED"
+                                    self.direction_banner_text = f"{state_msg} (RELEASE PEACE SIGN)"
+                                else:
+                                    self.peace_hold_start = 0.0
+
+                                if is_thumbs_up and not self.vision_engine.thumb_latched and (now_time - self.last_thumb_trigger_time) > 2.0:
+                                    if self.thumb_hold_start == 0.0:
+                                        self.thumb_hold_start = now_time
+                                    else:
+                                        held_t = now_time - self.thumb_hold_start
+                                        rem_t = max(0.0, self.THUMB_HOLD_DURATION - held_t)
+                                        mode_lbl = "EXIT SLIDESHOW" if self.os_dispatcher.slideshow_active else "ENTER SLIDESHOW"
+                                        self.direction_banner_text = f"HOLD THUMBS UP TO {mode_lbl} ({rem_t:.1f}s)"
+                                        if held_t >= self.THUMB_HOLD_DURATION:
+                                            self.last_thumb_trigger_time = now_time
+                                            self.thumb_hold_start = 0.0
+                                            self.vision_engine.thumb_latched = True
+                                            self.global_cooldown_until = now_time + 1.2
+                                            res_str = self.os_dispatcher.execute_toggle_slideshow()
+                                            self._update_telemetry_card(
+                                                "Right Swipe", 98.8,
+                                                custom_action=res_str,
+                                                custom_key="👍 Esc" if not self.os_dispatcher.slideshow_active else "👍 Fullscreen"
+                                            )
+                                            self.live_gesture_title.configure(text=f"Thumbs Up ({'Slideshow' if self.os_dispatcher.slideshow_active else 'Exit'})")
+                                elif is_thumbs_up and self.vision_engine.thumb_latched:
+                                    self.direction_banner_text = "SLIDESHOW TOGGLED (RELEASE THUMBS UP)"
+                                else:
+                                    self.thumb_hold_start = 0.0
+
                     open_palm_enabled = gesture_states.get("Open Palm", True)
                     is_open_palm = (
                         open_palm_enabled and
@@ -3309,6 +3944,7 @@ class WaveDesktopApp:
                         )
                     )
                     if is_open_palm:
+                        self.draw_arm_start = 0.0
                         self.air_canvas.clear_all()
 
                     if is_open_palm and (now_time - self.last_palm_toggle_time) > 2.0:
@@ -3331,7 +3967,7 @@ class WaveDesktopApp:
                                 )
                                 self.last_palm_toggle_time = now_time
                                 self.palm_hold_start = 0.0
-                                self.global_cooldown_until = now_time + 1.5
+                                self.global_cooldown_until = now_time + 1.0
                     else:
                         self.palm_hold_start = 0.0
 
@@ -3359,7 +3995,7 @@ class WaveDesktopApp:
 
                     cv2.putText(
                         display_frame, overlay_text, (16, 36),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.78, overlay_color, 2, cv2.LINE_AA
+                        cv2.FONT_HERSHEY_DUPLEX, 0.74, overlay_color, 2, cv2.LINE_AA
                     )
                     rgb_display = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(rgb_display)
@@ -3368,7 +4004,7 @@ class WaveDesktopApp:
         except Exception as e:
             print(f"[WARN] Non-fatal loop recovery: {e}")
 
-        self.root.after(4, self.update_loop)
+        self.root.after(8, self.update_loop)
 
     def on_close(self):
         try:
