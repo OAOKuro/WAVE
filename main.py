@@ -19,6 +19,9 @@ from PIL import Image, ImageTk, ImageDraw
 from collections import deque
 from pynput.keyboard import Key, Controller as KeyController
 from pynput.mouse import Controller as MouseController
+from calibration_panel import CalibrationPanel
+from error_handler import ErrorHandler
+
 
 cv2.setUseOptimized(True)
 torch.set_num_threads(2)
@@ -263,6 +266,11 @@ class AsyncMediaPipeTracker:
             t0 = cv2.getTickCount()
             # 384x288 resolution processes in ~4.5ms on CPU and reduces motion blur artifacts!
             small = cv2.resize(frame, (384, 288), interpolation=cv2.INTER_LINEAR)
+            small = self._adjust_lighting(
+                small,
+                sensitivity=cfg.get("lighting_sensitivity", 0.50),
+                auto_light=cfg.get("enable_auto_lighting_optional", False)
+            )
             if cfg.get("low_light_clahe", False):
                 small = self._apply_clahe(small)
             rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
@@ -298,6 +306,39 @@ class AsyncMediaPipeTracker:
         except Exception:
             pass
 
+    @staticmethod
+    def apply_lighting_calibration(bgr, sensitivity=0.50, auto_light=False):
+        img = bgr
+        if auto_light:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            mean_lum = max(float(np.mean(gray)), 1.0)
+            gamma = float(np.clip(math.log(128.0 / 255.0) / math.log(mean_lum / 255.0), 0.55, 1.85))
+            inv_gamma = 1.0 / gamma
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
+            img = cv2.LUT(img, table)
+
+        delta = (float(sensitivity) - 0.50) * 140.0
+        if abs(delta) >= 2.0:
+            img = cv2.convertScaleAbs(img, alpha=1.0, beta=delta)
+        return img
+        
+    @staticmethod
+    def _adjust_lighting(bgr, sensitivity=0.50, auto_light=False):
+        img = bgr
+        if auto_light:
+            # Target mean luminance ~128 using adaptive gamma correction
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            mean_lum = max(float(np.mean(gray)), 1.0)
+            gamma = float(np.clip(math.log(128.0 / 255.0) / math.log(mean_lum / 255.0), 0.55, 1.85))
+            inv_gamma = 1.0 / gamma
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
+            img = cv2.LUT(img, table)
+
+        # sensitivity: 0.50 = neutral, <0.50 dims bright rooms, >0.50 brightens dark rooms
+        delta = (float(sensitivity) - 0.50) * 140.0
+        if abs(delta) >= 2.0:
+            img = cv2.convertScaleAbs(img, alpha=1.0, beta=delta)
+        return img
 
 # ==============================================================================
 # 1. HOVER TOOLTIP WIDGET FOR 'ⓘ' INFO BADGES
@@ -1038,7 +1079,11 @@ class IPCConfigManager:
             "Open Palm": True,
             "Pinch In / Out": True,
             "Index Finger Point": True
-        }
+        },
+        "lighting_sensitivity": 0.50,
+        "enable_auto_lighting_optional": False,
+        "sandbox_mode": False,
+        "theme": "light",
     }
 
     def __init__(self, filepath=CONFIG_FILE):
@@ -1047,32 +1092,45 @@ class IPCConfigManager:
         self.last_sync_time = time.time()
 
     def load(self):
+        self.had_load_error = False
         if not os.path.exists(self.filepath):
             self.save(self.DEFAULT_CONFIG.copy())
             return self.DEFAULT_CONFIG.copy()
         try:
             with open(self.filepath, "r") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("Root JSON is not an object")
+            
             merged = self.DEFAULT_CONFIG.copy()
             merged.update(data)
+
+            merged["min_detection_confidence"] = float(np.clip(float(merged.get("min_detection_confidence", 0.60)), 0.10, 1.00))
+            merged["lighting_sensitivity"] = float(np.clip(float(merged.get("lighting_sensitivity", 0.50)), 0.00, 1.00))
+            merged["swipe_cooldown"] = float(np.clip(float(merged.get("swipe_cooldown", 1.25)), 0.30, 5.00))
+
             if "gesture_mappings" not in data:
                 merged["gesture_mappings"] = self.DEFAULT_CONFIG["gesture_mappings"].copy()
             else:
                 for k, v in self.DEFAULT_CONFIG["gesture_mappings"].items():
                     if k not in merged["gesture_mappings"]:
                         merged["gesture_mappings"][k] = v
+
                 if merged["gesture_mappings"].get("Open Palm") == "Key B":
                     merged["gesture_mappings"]["Open Palm"] = "Engine Toggle"
+            
             if "gesture_states" not in data:
                 merged["gesture_states"] = self.DEFAULT_CONFIG["gesture_states"].copy()
             else:
                 merged["gesture_states"]["Open Palm"] = merged["gesture_states"].get("Open Palm", True)
+
             if not isinstance(merged.get("roi_bounds"), list) or len(merged["roi_bounds"]) != 4:
                 merged["roi_bounds"] = list(self.DEFAULT_ROI)
             if merged.get("active_tab") == "mapping":
                 merged["active_tab"] = "settings"
             return merged
         except Exception:
+            self.had_load_error = True
             return self.DEFAULT_CONFIG.copy()
 
     def save(self, cfg=None):
@@ -1819,6 +1877,108 @@ class WaveDesktopApp:
         "Index Finger Point": ("Air-Draw Annotation — Async 45+ FPS Catmull-Rom Spline Pen", "✏️ Air-Draw Pen", "✏️ Air-Draw Pen")
     }
 
+    THEMES = {
+        "light": {
+            "BG_MAIN": "#F8FAFC", "BG_CARD": "#FFFFFF", "BORDER": "#E2E8F0",
+            "FG_PRIMARY": "#0F172A", "FG_MUTED": "#64748B", "ACCENT": "#136DEC", "PILL_BG": "#F1F5F9"
+        },
+        "dark": {
+            "BG_MAIN": "#0B1120", "BG_CARD": "#1E293B", "BORDER": "#334155",
+            "FG_PRIMARY": "#F8FAFC", "FG_MUTED": "#94A3B8", "ACCENT": "#3B82F6", "PILL_BG": "#0F172A"
+        }
+    }
+
+    def _get_calibration_sample(self):
+        _, frame, _, _ = self.cam_stream.read()
+        return frame, float(self.cached_hand_score)
+
+    def _retry_camera_connection(self):
+        self.config["camera_enabled"] = True
+        self.ipc_config.save(self.config)
+        self.cam_stream.set_camera_enabled(True)
+        self._sync_camera_ui(True)
+        
+    def _apply_accessibility_profile(self):
+        tremor_on = bool(self.config.get("accessibility_tremor_filter", False))
+        if tremor_on:
+            # Heavy low-pass EMA smoothing (lower alpha = stronger tremor suppression)
+            self.draw_x_ema.alpha = 0.16
+            self.draw_y_ema.alpha = 0.16
+            self.live_conf_ema.alpha = 0.20
+            # Require longer, deliberate holds to prevent accidental triggers
+            self.PALM_HOLD_DURATION = 1.75
+            self.PEACE_HOLD_DURATION = 1.65
+            self.THUMB_HOLD_DURATION = 1.75
+        else:
+            # Standard responsive presenter defaults
+            self.draw_x_ema.alpha = 0.45
+            self.draw_y_ema.alpha = 0.45
+            self.live_conf_ema.alpha = 0.40
+            self.PALM_HOLD_DURATION = 1.20
+            self.PEACE_HOLD_DURATION = 1.10
+            self.THUMB_HOLD_DURATION = 1.20
+        
+
+    def _on_calibration_changed(self):
+        self.config = self.ipc_config.state
+        if hasattr(self, "clahe_toggle"):
+            self.clahe_toggle.configure(
+                image=self.assets["toggle_on"] if self.config.get("low_light_clahe", False) else self.assets["toggle_off"]
+            )
+        if hasattr(self, "roi_toggle"):
+            self.roi_toggle.configure(
+                image=self.assets["toggle_on"] if self.config.get("enable_roi_optional", False) else self.assets["toggle_off"]
+            )
+            self._apply_accessibility_profile()
+
+    def toggle_theme(self):
+        new_theme = "dark" if self.config.get("theme", "light") == "light" else "light"
+        self.config["theme"] = new_theme
+        self.ipc_config.save(self.config)
+        self.apply_theme(new_theme)
+
+    def apply_theme(self, theme_name="light"):
+        pal = self.THEMES.get(theme_name, self.THEMES["light"])
+        self.root.configure(bg=pal["BG_MAIN"])
+        self.navbar.configure(bg=pal["BG_CARD"], highlightbackground=pal["BORDER"])
+        self.content_container.configure(bg=pal["BG_MAIN"])
+        self.live_view.configure(bg=pal["BG_MAIN"])
+        self.settings_view.configure(bg=pal["BG_MAIN"])
+        self.telemetry_card.configure(bg=pal["BG_CARD"], highlightbackground=pal["BORDER"])
+        self.footer_card.configure(bg=pal["BG_CARD"], highlightbackground=pal["BORDER"])
+        self.live_gesture_title.configure(fg=pal["FG_PRIMARY"], bg=pal["BG_CARD"])
+        self.theme_btn.configure(bg=pal["PILL_BG"], fg=pal["FG_PRIMARY"], highlightbackground=pal["BORDER"])
+        if hasattr(self, "calibration_view"):
+            self.calibration_view.apply_theme(pal)
+        self.switch_tab(self.config.get("active_tab", "live"))
+
+    def switch_tab(self, tab_name):
+        if tab_name not in ("live", "calibration", "settings"):
+            tab_name = "live"
+        self.config["active_tab"] = tab_name
+        self.ipc_config.save(self.config)
+
+        pal = self.THEMES.get(self.config.get("theme", "light"), self.THEMES["light"])
+        self.live_view.pack_forget()
+        self.calibration_view.pack_forget()
+        self.settings_view.pack_forget()
+
+        for btn in (self.tab_live_btn, self.tab_calib_btn, self.tab_settings_btn):
+            btn.configure(bg=pal["PILL_BG"], fg=pal["FG_MUTED"])
+
+        if tab_name == "live":
+            self.live_view.pack(fill="both", expand=True)
+            self.tab_live_btn.configure(bg=pal["BG_CARD"], fg=pal["FG_PRIMARY"])
+            if not self.config.get("camera_enabled", True):
+                self.cam_off_rendered = False
+        elif tab_name == "calibration":
+            self.calibration_view.refresh_from_config()
+            self.calibration_view.pack(fill="both", expand=True)
+            self.tab_calib_btn.configure(bg=pal["BG_CARD"], fg=pal["ACCENT"])
+        else:
+            self.settings_view.pack(fill="both", expand=True)
+            self.tab_settings_btn.configure(bg=pal["BG_CARD"], fg=pal["ACCENT"])
+
     def __init__(self, root):
         self.root = root
         self.root.title("WAVE - Multimodal Gesture & Voice Presentation Assistant")
@@ -1827,6 +1987,18 @@ class WaveDesktopApp:
         self.root.configure(bg=self.BG_MAIN)
 
         self.ipc_config = IPCConfigManager(CONFIG_FILE)
+        self.error_handler = ErrorHandler(
+            root=self.root,
+            callbacks={
+                "retry_camera": self._retry_camera_connection,
+                "open_calibration": lambda: self.switch_tab("calibration"),
+                "reset_settings": self.reset_default_mappings
+            }
+        )
+        self.no_hand_since = time.time()
+        self.low_conf_streak = 0
+        if getattr(self.ipc_config, "had_load_error", False):
+            self.root.after(600, self.error_handler.notify_config_error)
         self.config = self.ipc_config.state
         self.os_dispatcher = OSActionDispatcher()
         self.vision_engine = VisionGestureEngine(MODEL_FILE)
@@ -1902,11 +2074,12 @@ class WaveDesktopApp:
 
         self._build_navbar()
         self._build_views()
+        self._apply_accessibility_profile()
         self._bind_shortcuts()
 
         self._sync_camera_ui(cam_start_on)
         initial_tab = self.config.get("active_tab", "live")
-        if initial_tab not in ("live", "settings"):
+        if initial_tab not in ("live", "calibration", "settings"):
             initial_tab = "live"
         self.switch_tab(initial_tab)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1979,6 +2152,13 @@ class WaveDesktopApp:
         self.tab_live_btn.pack(side="left")
         self.tab_live_btn.bind("<Button-1>", lambda e: self.switch_tab("live"))
 
+        self.tab_calib_btn = tk.Label(
+            tab_outer, text="🎛 Calibration", font=("Segoe UI", 9, "bold"),
+            padx=16, pady=5, cursor="hand2"
+        )
+        self.tab_calib_btn.pack(side="left")
+        self.tab_calib_btn.bind("<Button-1>", lambda e: self.switch_tab("calibration"))
+
         self.tab_settings_btn = tk.Label(
             tab_outer, text="⚙ Settings & Keybinds", font=("Segoe UI", 9, "bold"),
             padx=16, pady=5, cursor="hand2"
@@ -1988,6 +2168,14 @@ class WaveDesktopApp:
 
         right_frame = tk.Frame(self.navbar, bg=self.BG_CARD)
         right_frame.pack(side="right", padx=24, pady=12)
+
+        self.theme_btn = tk.Label(
+            right_frame, text="🌓 Theme", font=("Segoe UI", 8, "bold"),
+            fg=self.SLATE_700, bg=self.PILL_BG, highlightthickness=1, highlightbackground=self.BORDER_LIGHT,
+            padx=10, pady=4, cursor="hand2"
+        )
+        self.theme_btn.pack(side="right", padx=(10, 0))
+        self.theme_btn.bind("<Button-1>", lambda e: self.toggle_theme())
 
         avatar_lbl = tk.Label(right_frame, image=self.assets["avatar"], bg=self.BG_CARD, cursor="hand2")
         avatar_lbl.pack(side="right", padx=(14, 0))
@@ -2028,6 +2216,14 @@ class WaveDesktopApp:
 
         self.live_view = tk.Frame(self.content_container, bg=self.BG_MAIN)
         self.settings_view = tk.Frame(self.content_container, bg=self.BG_MAIN)
+        self.calibration_view = CalibrationPanel(
+            self.content_container,
+            self.ipc_config,
+            on_change_callback=self._on_calibration_changed,
+            on_save_callback=self._on_calibration_changed,
+            on_reset_roi=self.reset_roi_bounds,
+            sample_provider=self._get_calibration_sample
+        )
 
         self._build_live_presentation_view()
         self._build_vertical_settings_view()
@@ -2792,8 +2988,10 @@ class WaveDesktopApp:
         self.root.bind("<Key>", self._on_any_key)
 
     def _on_tab_key(self, event):
-        new_tab = "settings" if self.config.get("active_tab", "live") == "live" else "live"
-        self.switch_tab(new_tab)
+        order = ("live", "calibration", "settings")
+        curr = self.config.get("active_tab", "live")
+        next_tab = order[(order.index(curr) + 1) % len(order)] if curr in order else "live"
+        self.switch_tab(next_tab)
         return "break"
 
     def _on_space_key(self, event):
@@ -2835,23 +3033,34 @@ class WaveDesktopApp:
             return
 
     def switch_tab(self, tab_name):
-        if tab_name not in ("live", "settings"):
+        if tab_name not in ("live", "calibration", "settings"):
             tab_name = "live"
         self.config["active_tab"] = tab_name
         self.ipc_config.save(self.config)
 
+        pal = self.THEMES.get(self.config.get("theme", "light"), self.THEMES["light"])
+
+        
+        self.live_view.pack_forget()
+        self.calibration_view.pack_forget()
+        self.settings_view.pack_forget()
+
+        # Reset all 3 tab buttons to inactive pill color
+        for btn in (self.tab_live_btn, self.tab_calib_btn, self.tab_settings_btn):
+            btn.configure(bg=pal["PILL_BG"], fg=pal["FG_MUTED"])
+
         if tab_name == "live":
-            self.settings_view.pack_forget()
             self.live_view.pack(fill="both", expand=True)
-            self.tab_live_btn.configure(bg=self.BG_CARD, fg=self.SLATE_900)
-            self.tab_settings_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+            self.tab_live_btn.configure(bg=pal["BG_CARD"], fg=pal["FG_PRIMARY"])
             if not self.config.get("camera_enabled", True):
                 self.cam_off_rendered = False
+        elif tab_name == "calibration":
+            self.calibration_view.refresh_from_config()
+            self.calibration_view.pack(fill="both", expand=True)
+            self.tab_calib_btn.configure(bg=pal["BG_CARD"], fg=pal["ACCENT"])
         else:
-            self.live_view.pack_forget()
             self.settings_view.pack(fill="both", expand=True)
-            self.tab_settings_btn.configure(bg=self.BG_CARD, fg=self.BLUE_PRIMARY)
-            self.tab_live_btn.configure(bg=self.PILL_BG, fg=self.SLATE_500)
+            self.tab_settings_btn.configure(bg=pal["BG_CARD"], fg=pal["ACCENT"])
 
     def toggle_engine(self):
         new_state = not self.config.get("recognition_enabled", True)
@@ -2996,6 +3205,10 @@ class WaveDesktopApp:
                 self.root.after(30, self.update_loop)
                 return
 
+            #camera disconnected 
+            if cam_on and (self.cam_stream.cap is None or not self.cam_stream.cap.isOpened()) and (now_tick - self.log_start_time) > 3.0:
+                self.error_handler.notify_camera_not_found()
+
             ret, raw_frame, cam_frame_id, measured_cam_fps = self.cam_stream.read()
 
             if ret and raw_frame is not None and cam_frame_id != self.last_processed_cam_id:
@@ -3008,10 +3221,15 @@ class WaveDesktopApp:
 
                 # Read latest 45+ FPS landmarks from our non-blocking AsyncMediaPipeTracker!
                 self.cached_landmarks, self.cached_hand_score, mean_lat = self.async_tracker.get_latest()
-
-                hand_detected = self.cached_landmarks is not None
                 now_time = time.time()
-                swipe_cooldown = max(float(self.config.get("swipe_cooldown", 1.25)), 1.00)
+                hand_detected = self.cached_landmarks is not None
+                if not hand_detected:
+                    if recognition_on and is_live_tab and (now_time - self.no_hand_since) > 15.0:
+                        self.error_handler.notify_no_hand_detected()
+                else:
+                    self.no_hand_since = now_time
+                base_cooldown = max(float(self.config.get("swipe_cooldown", 1.25)), 1.00)
+                swipe_cooldown = max(base_cooldown, 1.85) if self.config.get("accessibility_tremor_filter", False) else base_cooldown
                 zoom_sens = float(self.config.get("zoom_sensitivity", 0.050))
                 roi_enabled = bool(self.config.get("enable_roi_optional", False))
                 roi_bounds = self.config.get("roi_bounds", [0.16, 0.10, 0.84, 0.90])
@@ -3019,7 +3237,12 @@ class WaveDesktopApp:
                 if is_live_tab:
                     card_w = max(self.video_card.winfo_width(), 860)
                     card_h = max(self.video_card.winfo_height(), 460)
-                    base_vis = self._apply_clahe_low_light(raw_frame) if self.config.get("low_light_clahe", False) else raw_frame
+                    lit_frame = AsyncMediaPipeTracker.apply_lighting_calibration(
+                        raw_frame,
+                        sensitivity=self.config.get("lighting_sensitivity", 0.50),
+                        auto_light=self.config.get("enable_auto_lighting_optional", False)
+                    )
+                    base_vis = self._apply_clahe_low_light(lit_frame) if self.config.get("low_light_clahe", False) else lit_frame
                     display_frame = cv2.resize(base_vis, (card_w, card_h), interpolation=cv2.INTER_NEAREST)
                 else:
                     card_w, card_h = 960, 500

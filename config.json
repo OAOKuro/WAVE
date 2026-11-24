@@ -1,18 +1,18 @@
 {
     "camera_enabled": true,
-    "recognition_enabled": true,
+    "recognition_enabled": false,
     "min_detection_confidence": 0.7,
     "min_tracking_confidence": 0.7,
     "frame_skip": 2,
     "model_complexity": 0,
     "low_light_clahe": true,
     "show_skeleton_overlay": true,
-    "enable_roi_optional": false,
+    "enable_roi_optional": true,
     "roi_bounds": [
-        0.24,
-        0.173,
-        0.562,
-        0.823
+        0.098,
+        0.039,
+        0.808,
+        0.98
     ],
     "swipe_cooldown": 0.5,
     "zoom_sensitivity": 0.06,
@@ -37,13 +37,16 @@
         "Pinch In / Out": false,
         "Index Finger Point": true
     },
+    "lighting_sensitivity": 1.0,
+    "enable_auto_lighting_optional": true,
+    "sandbox_mode": false,
+    "theme": "dark",
     "target_fps": 60,
-    "lighting_sensitivity": 0.6,
-    "enable_auto_lighting_optional": false,
     "roi_settings": {
         "x_min": 0.15,
         "y_min": 0.15,
         "x_max": 0.85,
         "y_max": 0.85
-    }
+    },
+    "accessibility_tremor_filter": true
 }
