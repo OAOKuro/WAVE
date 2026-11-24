@@ -23,8 +23,8 @@
     "enable_blackout_fist": true,
     "active_tab": "live",
     "gesture_mappings": {
-        "Left Swipe": "left",
-        "Right Swipe": "right",
+        "Left Swipe": "Left Arrow",
+        "Right Swipe": "Right Arrow",
         "Pinch": "ctrl+-",
         "Reverse Pinch": "ctrl++",
         "Open Palm": "Engine Toggle",

@@ -1931,7 +1931,24 @@ class VisionGestureEngine:
     def is_strict_open_palm(landmarks, zoom_active=False):
         if zoom_active:
             return False
+        wrist = landmarks.landmark[0]
+        index_tip, index_pip = landmarks.landmark[8], landmarks.landmark[6]
+        middle_tip, middle_pip = landmarks.landmark[12], landmarks.landmark[10]
+        ring_tip, ring_pip = landmarks.landmark[16], landmarks.landmark[14]
+        pinky_tip, pinky_pip = landmarks.landmark[20], landmarks.landmark[18]
 
+        index_up = math.hypot(index_tip.x - wrist.x, index_tip.y - wrist.y) > math.hypot(index_pip.x - wrist.x, index_pip.y - wrist.y) * 1.16
+        middle_up = math.hypot(middle_tip.x - wrist.x, middle_tip.y - wrist.y) > math.hypot(middle_pip.x - wrist.x, middle_pip.y - wrist.y) * 1.16
+        ring_folded = math.hypot(ring_tip.x - wrist.x, ring_tip.y - wrist.y) < math.hypot(ring_pip.x - wrist.x, ring_pip.y - wrist.y) * 1.04
+        pinky_folded = math.hypot(pinky_tip.x - wrist.x, pinky_tip.y - wrist.y) < math.hypot(pinky_pip.x - wrist.x, pinky_pip.y - wrist.y) * 1.04
+        v_spread = math.hypot(index_tip.x - middle_tip.x, index_tip.y - middle_tip.y) > 0.035
+
+        return index_up and middle_up and ring_folded and pinky_folded and v_spread
+
+    @staticmethod
+    def is_thumbs_up_slideshow_gesture(landmarks, zoom_active=False):
+        if zoom_active:
+            return False
         wrist = landmarks.landmark[0]
         thumb_tip = landmarks.landmark[4]
         index_tip, index_pip = landmarks.landmark[8], landmarks.landmark[6]
